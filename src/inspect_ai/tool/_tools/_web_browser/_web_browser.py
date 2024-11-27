@@ -1,5 +1,8 @@
 import re
 from textwrap import dedent
+import os
+import asyncio
+import sys
 
 from inspect_ai._util.error import PrerequisiteError
 from inspect_ai.tool._tool import Tool, ToolError, tool
@@ -334,8 +337,19 @@ WEB_CLIENT_REQUEST = "/app/web_browser/web_client.py"
 WEB_CLIENT_NEW_SESSION = "/app/web_browser/web_client_new_session.py"
 BROWSER_SESSION_ID = "BROWSER_SESSION_ID"
 
+CURRENT_DIR = os.path.dirname(__file__)
+LOCAL_WEB_CLIENT_REQUEST = os.path.join(CURRENT_DIR, "_resources", "web_client.py")
+LOCAL_WEB_CLIENT_NEW_SESSION = os.path.join(CURRENT_DIR, "_resources", "web_client_new_session.py")
 
 async def web_browser_cmd(cmd: str, *args: str) -> str:
+    try:
+        # Try sandbox implementation first
+        return await web_browser_cmd_sandbox(cmd, *args)
+    except PrerequisiteError:
+        # Fall back to local implementation if sandbox not available
+        return await web_browser_cmd_local(cmd, *args)
+
+async def web_browser_cmd_sandbox(cmd: str, *args: str) -> str:
     sandbox_env = await sandbox_with(WEB_CLIENT_NEW_SESSION)
     session_flag = ""
     if sandbox_env:
@@ -354,7 +368,8 @@ async def web_browser_cmd(cmd: str, *args: str) -> str:
         session_flag = f"--session_name={browser_session}"
 
     else:
-        sandbox_env = await web_browser_sandbox()
+        # Instead of creating a new sandbox, raise PrerequisiteError to trigger fallback to web_browser_cmd_local
+        raise PrerequisiteError("Sandbox environment not available")
 
     arg_list = None
     if session_flag:
@@ -381,6 +396,58 @@ async def web_browser_cmd(cmd: str, *args: str) -> str:
             raise RuntimeError(
                 f"web_browser output must contain either 'error' or 'web_at' field: {result.stdout}"
             )
+
+async def web_browser_cmd_local(cmd: str, *args: str) -> str:
+    session_flag = ""
+    browser_session = store().get(BROWSER_SESSION_ID, "")
+    
+    if not browser_session:
+        if not os.path.exists(LOCAL_WEB_CLIENT_NEW_SESSION):
+            raise RuntimeError("Local web browser new session script not found")
+            
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            LOCAL_WEB_CLIENT_NEW_SESSION,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            raise RuntimeError(f"Error creating new web browser session: {stderr.decode()}")
+            
+        browser_session = stdout.decode().strip("\n")
+        store().set(BROWSER_SESSION_ID, browser_session)
+    
+    session_flag = f"--session_name={browser_session}"
+    
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        LOCAL_WEB_CLIENT_REQUEST,
+        session_flag,
+        cmd,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"Error executing web browser command {cmd}({', '.join(args)}): {stderr.decode()}"
+        )
+    
+    response = parse_web_browser_output(stdout.decode())
+    if "web_at" in response:
+        web_at = str(response.get("web_at")) or "(no web accessiblity tree available)"
+        store().set(WEB_BROWSER_AT, web_at)
+        return web_at
+    elif "error" in response:
+        raise ToolError(str(response.get("error")) or "(unknown error)")
+    else:
+        raise RuntimeError(
+            f"web_browser output must contain either 'error' or 'web_at' field: {stdout.decode()}"
+        )
 
 
 async def web_browser_sandbox() -> SandboxEnvironment:
