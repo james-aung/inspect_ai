@@ -411,7 +411,7 @@ async def web_browser_cmd_local(cmd: str, *args: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await process.communicate() # TODO see if we can import methods and call natively instead of running via subprocess
         
         if process.returncode != 0:
             raise RuntimeError(f"Error creating new web browser session: {stderr.decode()}")
