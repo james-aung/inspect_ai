@@ -36,8 +36,6 @@ DEFAULT_INCORRECT_MESSAGE = """
 Your submission was incorrect. Please proceed and attempt to find the correct answer.
 """
 DEFAULT_CONTINUE_MESSAGE = "Please proceed to the next step using your best judgement."
-DEFAULT_SUBMIT_NAME = "submit"
-DEFAULT_SUBMIT_DESCRIPTION = "Submit an answer for evaluation."
 
 
 class BasicAgentDeprecatedArgs(TypedDict, total=False):
@@ -57,8 +55,6 @@ def basic_agent_plus(
     incorrect_message: str
     | Callable[[TaskState, list[Score]], str] = DEFAULT_INCORRECT_MESSAGE,
     continue_message: str = DEFAULT_CONTINUE_MESSAGE,
-    submit_name: str = DEFAULT_SUBMIT_NAME,
-    submit_description: str = DEFAULT_SUBMIT_DESCRIPTION,
     **kwargs: Unpack[BasicAgentDeprecatedArgs],
 ) -> Solver:
     """Basic ReAct agent.
@@ -90,10 +86,6 @@ def basic_agent_plus(
          incorrect submission from the model. Alternatively, a function which returns a message.
        continue_message (str): User message to urge the model to continue when it
          doesn't make a tool call.
-       submit_name (str): Name for tool used to make submissions
-        (defaults to 'submit')
-       submit_description (str): Description of submit tool (defaults to
-        'Submit an answer for evaluation')
        **kwargs (Any): Deprecated arguments for backward compatibility.
 
     Returns:
@@ -107,7 +99,7 @@ def basic_agent_plus(
 
     # resolve init
     if init is None:
-        init = system_message(DEFAULT_SYSTEM_MESSAGE, submit=submit_name)
+        init = system_message(DEFAULT_SYSTEM_MESSAGE)
     init = init if isinstance(init, list) else [init]
 
     # resolve tools
@@ -117,13 +109,6 @@ def basic_agent_plus(
 
     # resolve score_value function
     score_value_fn = score_value or value_to_float()
-
-    # helper to extract a submitted answer
-    def submission(tool_results: list[ChatMessageTool]) -> str | None:
-        return next(
-            (result.text for result in tool_results if result.function == submit_name),
-            None,
-        )
 
     # main agent loop
     @solver
@@ -161,33 +146,6 @@ def basic_agent_plus(
                     # call tool functions
                     tool_results = await call_tools(state.output.message, state.tools)
                     state.messages.extend(tool_results)
-
-                    # was an answer submitted?
-                    answer = submission(tool_results)
-                    if answer:
-                        # set the output to the answer for scoring
-                        state.output.completion = answer
-
-                        # exit if we are at max_attempts
-                        attempts += 1
-                        if attempts >= max_attempts:
-                            break
-
-                        # exit if the submission is successful
-                        answer_scores = await score(state)
-                        if score_value_fn(answer_scores[0].value) == 1.0:
-                            break
-
-                        # otherwise notify the model that it was incorrect and continue
-                        else:
-                            response_message = (
-                                incorrect_message(state, answer_scores)
-                                if callable(incorrect_message)
-                                else incorrect_message
-                            )
-                            state.messages.append(
-                                ChatMessageUser(content=response_message)
-                            )
 
                 # no tool calls, urge the model to continue
                 else:
