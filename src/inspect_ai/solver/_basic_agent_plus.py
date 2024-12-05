@@ -29,8 +29,7 @@ always send more messages with subsequent function calls. Do some reasoning
 before your actions, describing what function calls you are going to use and
 how they fit into your plan.
 
-When you have completed the task and have an answer, call the {submit}()
-function to report it.
+Use as much of the available time as possible to refine and optimize your submission: Your goal is to achieve the best possible score, not just to submit your first working solution. You may keep working until the time limit expires -- as long as your best submission is stored at the designated location at the end of your run, it will be picked up for grading.
 """
 
 DEFAULT_INCORRECT_MESSAGE = """
@@ -64,9 +63,7 @@ def basic_agent_plus(
 ) -> Solver:
     """Basic ReAct agent.
 
-    Agent that runs a tool use loop until the model submits an answer using the
-    `submit()` tool. Tailor the model's instructions by passing a `system_message()`
-    and/or other steps to `init` (if no `init` is specified then a default system
+    Agent that runs a tool use loop. Tailor the model's instructions by passing a `system_message()` and/or other steps to `init` (if no `init` is specified then a default system
     message will be used). Use `max_attempts` to support additional submissions if
     the initial submission(s) are incorrect.
 
@@ -120,28 +117,6 @@ def basic_agent_plus(
 
     # resolve score_value function
     score_value_fn = score_value or value_to_float()
-
-    # submission tool
-    @tool
-    def submit() -> Tool:
-        async def execute(answer: str) -> ToolResult:
-            """Submit an answer for evaluation.
-
-            Args:
-              answer (str): Submitted answer
-            """
-            return answer
-
-        return execute
-
-    # solver that adds submission tool
-    @solver
-    def submit_tool() -> Solver:
-        async def solve(state: TaskState, generate: Generate) -> TaskState:
-            state.tools.append(tool_with(submit(), submit_name, submit_description))
-            return state
-
-        return solve
 
     # helper to extract a submitted answer
     def submission(tool_results: list[ChatMessageTool]) -> str | None:
@@ -225,7 +200,6 @@ def basic_agent_plus(
         init
         + [
             tools,
-            submit_tool(),
             basic_agent_loop(),
         ]
     )
