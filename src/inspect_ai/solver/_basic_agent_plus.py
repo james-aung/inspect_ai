@@ -137,8 +137,18 @@ def basic_agent_plus(
 
                     # Remove oldest non-system messages
                     non_system_messages = [m for m in state.messages if not m.is_system]
-                    if len(non_system_messages) > 2:
-                        state.messages.remove(non_system_messages[0])
+                    system_messages = [m for m in state.messages if m.is_system]
+
+                    if len(non_system_messages) > 10:
+                        # Remove the earliest 10 non-system messages
+                        non_system_messages = non_system_messages[10:]
+                    elif len(non_system_messages) > 2:
+                        # Keep only the last two non-system messages
+                        non_system_messages = non_system_messages[-2:]
+
+                    # Update the state.messages with the pruned non-system messages
+                    state.messages = system_messages + non_system_messages
+
                     continue
 
                 # resolve tools calls (if any)
