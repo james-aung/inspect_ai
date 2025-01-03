@@ -1,5 +1,6 @@
 import json
 import os
+from logging import getLogger
 from typing import Any
 
 from openai import (
@@ -18,6 +19,7 @@ from openai.types.chat import (
     ChatCompletionContentPartImageParam,
     ChatCompletionContentPartParam,
     ChatCompletionContentPartTextParam,
+    ChatCompletionDeveloperMessageParam,
     ChatCompletionMessage,
     ChatCompletionMessageParam,
     ChatCompletionMessageToolCallParam,
@@ -35,6 +37,7 @@ from inspect_ai._util.constants import DEFAULT_MAX_RETRIES
 from inspect_ai._util.content import Content
 from inspect_ai._util.error import PrerequisiteError
 from inspect_ai._util.images import image_as_data_uri
+from inspect_ai._util.logger import warn_once
 from inspect_ai._util.url import is_data_uri, is_http_url
 from inspect_ai.tool import ToolCall, ToolChoice, ToolFunction, ToolInfo
 
@@ -56,6 +59,8 @@ from .util import (
     model_base_url,
     parse_tool_call,
 )
+
+logger = getLogger(__name__)
 
 OPENAI_API_KEY = "OPENAI_API_KEY"
 AZURE_OPENAI_API_KEY = "AZURE_OPENAI_API_KEY"
@@ -141,6 +146,18 @@ class OpenAIAPI(ModelAPI):
                 **model_args,
             )
 
+    def is_o1(self) -> bool:
+        return self.model_name.startswith("o1")
+
+    def is_o1_full(self) -> bool:
+        return self.is_o1() and not self.is_o1_mini() and not self.is_o1_preview()
+
+    def is_o1_mini(self) -> bool:
+        return self.model_name.startswith("o1-mini")
+
+    def is_o1_preview(self) -> bool:
+        return self.model_name.startswith("o1-preview")
+
     async def generate(
         self,
         input: list[ChatMessage],
@@ -148,8 +165,8 @@ class OpenAIAPI(ModelAPI):
         tool_choice: ToolChoice,
         config: GenerateConfig,
     ) -> ModelOutput | tuple[ModelOutput, ModelCall]:
-        # short-circuit to call o1- model
-        if self.model_name.startswith("o1-"):
+        # short-circuit to call o1- models that are text only
+        if self.is_o1_preview() or self.is_o1_mini():
             return await generate_o1(
                 client=self.client,
                 input=input,
@@ -179,7 +196,7 @@ class OpenAIAPI(ModelAPI):
 
         # prepare request (we do this so we can log the ModelCall)
         request = dict(
-            messages=await as_openai_chat_messages(input),
+            messages=await as_openai_chat_messages(input, self.is_o1_full()),
             tools=chat_tools(tools) if len(tools) > 0 else NOT_GIVEN,
             tool_choice=chat_tool_choice(tool_choice) if len(tools) > 0 else NOT_GIVEN,
             **self.completion_params(config, len(tools) > 0),
@@ -257,7 +274,13 @@ class OpenAIAPI(ModelAPI):
         if config.seed is not None:
             params["seed"] = config.seed
         if config.temperature is not None:
-            params["temperature"] = config.temperature
+            if self.is_o1():
+                warn_once(
+                    logger,
+                    "o1 models do not support the 'temperature' parameter (temperature is always 1).",
+                )
+            else:
+                params["temperature"] = config.temperature
         # TogetherAPI requires temperature w/ num_choices
         elif config.num_choices is not None:
             params["temperature"] = 1
@@ -271,8 +294,10 @@ class OpenAIAPI(ModelAPI):
             params["logprobs"] = config.logprobs
         if config.top_logprobs is not None:
             params["top_logprobs"] = config.top_logprobs
-        if tools and config.parallel_tool_calls is not None:
+        if tools and config.parallel_tool_calls is not None and not self.is_o1():
             params["parallel_tool_calls"] = config.parallel_tool_calls
+        if config.reasoning_effort is not None and self.is_o1_full():
+            params["reasoning_effort"] = config.reasoning_effort
 
         return params
 
@@ -291,14 +316,23 @@ class OpenAIAPI(ModelAPI):
 
 
 async def as_openai_chat_messages(
-    messages: list[ChatMessage],
+    messages: list[ChatMessage], o1_full: bool
 ) -> list[ChatCompletionMessageParam]:
-    return [await openai_chat_message(message) for message in messages]
+    return [await openai_chat_message(message, o1_full) for message in messages]
 
 
-async def openai_chat_message(message: ChatMessage) -> ChatCompletionMessageParam:
+async def openai_chat_message(
+    message: ChatMessage, o1_full: bool
+) -> ChatCompletionMessageParam:
     if message.role == "system":
-        return ChatCompletionSystemMessageParam(role=message.role, content=message.text)
+        if o1_full:
+            return ChatCompletionDeveloperMessageParam(
+                role="developer", content=message.text
+            )
+        else:
+            return ChatCompletionSystemMessageParam(
+                role=message.role, content=message.text
+            )
     elif message.role == "user":
         return ChatCompletionUserMessageParam(
             role=message.role,

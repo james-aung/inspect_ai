@@ -1,5 +1,7 @@
+import time
 from typing import cast
 
+from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
@@ -9,6 +11,7 @@ from textual.containers import (
     Vertical,
     VerticalGroup,
 )
+from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -19,15 +22,10 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option, Separator
 
+from inspect_ai._util.format import format_progress_time
 from inspect_ai._util.registry import registry_unqualified_name
 from inspect_ai.log._samples import ActiveSample
-from inspect_ai.util._sandbox import (
-    SandboxConnection,
-    SandboxConnectionContainer,
-    SandboxConnectionLocal,
-)
 
-from ...core.progress import progress_time
 from .clock import Clock
 from .transcript import TranscriptView
 
@@ -49,6 +47,7 @@ class SamplesView(Widget):
     def __init__(self) -> None:
         super().__init__()
         self.samples: list[ActiveSample] = []
+        self.last_updated = time.perf_counter()
 
     def compose(self) -> ComposeResult:
         yield SamplesList()
@@ -65,7 +64,12 @@ class SamplesView(Widget):
         await self.query_one(TranscriptView).notify_active(active)
 
     def set_samples(self, samples: list[ActiveSample]) -> None:
-        self.query_one(SamplesList).set_samples(samples)
+        # throttle to no more than 1 second per 100 samples
+        throttle = round(max(len(samples) / 100, 1))
+        current = time.perf_counter()
+        if (current - self.last_updated) > throttle:
+            self.query_one(SamplesList).set_samples(samples)
+            self.last_updated = current
 
     async def set_highlighted_sample(self, highlighted: int | None) -> None:
         sample_info = self.query_one(SampleInfo)
@@ -143,7 +147,9 @@ class SamplesList(OptionList):
             table.add_column(width=1)
             task_name = Text.from_markup(f"{registry_unqualified_name(sample.task)}")
             task_name.truncate(18, overflow="ellipsis", pad=True)
-            task_time = Text.from_markup(f"{progress_time(sample.execution_time)}")
+            task_time = Text.from_markup(
+                f"{format_progress_time(sample.execution_time)}"
+            )
             table.add_row(task_name, task_time, " ")
             sample_id = Text.from_markup(f"id: {sample.sample.id}")
             sample_id.truncate(18, overflow="ellipsis", pad=True)
@@ -198,7 +204,7 @@ class SampleInfo(Horizontal):
     }
     SampleInfo Collapsible Contents {
         padding: 1 0 1 2;
-        overflow-y: hidden;
+        height: auto;
         overflow-x: auto;
     }
     SampleInfo Static {
@@ -211,51 +217,88 @@ class SampleInfo(Horizontal):
     def __init__(self) -> None:
         super().__init__()
         self._sample: ActiveSample | None = None
-        self._show_sandboxes = False
 
     def compose(self) -> ComposeResult:
-        if self._sample is not None and len(self._sample.sandboxes) > 0:
-            with Collapsible(title=""):
-                yield SandboxesView()
-        else:
-            yield Static()
+        with Collapsible(title=""):
+            yield SampleLimits()
+            yield SandboxesView()
 
     async def sync_sample(self, sample: ActiveSample | None) -> None:
-        # bail if we've already processed this sample
-        if self._sample == sample:
-            return
+        if sample is None:
+            self.display = False
+            self._sample = None
+        else:
+            # update sample limits
+            limits = self.query_one(SampleLimits)
+            await limits.sync_sample(sample)
 
-        # set sample
-        self._sample = sample
+            # bail if we've already processed this sample
+            if self._sample == sample:
+                return
 
-        # compute whether we should show connection and recompose as required
-        show_sandboxes = sample is not None and len(sample.sandboxes) > 0
-        if show_sandboxes != self._show_sandboxes:
-            await self.recompose()
-        self._show_sandboxes = show_sandboxes
+            # set sample
+            self._sample = sample
 
-        if sample is not None:
+            # update UI
             self.display = True
             title = f"{registry_unqualified_name(sample.task)} (id: {sample.sample.id}, epoch {sample.epoch}): {sample.model}"
-            if show_sandboxes:
-                self.query_one(Collapsible).title = title
-                sandboxes = self.query_one(SandboxesView)
-                await sandboxes.sync_sandboxes(sample.sandboxes)
-            else:
-                self.query_one(Static).update(title)
-        else:
-            self.display = False
+            self.query_one(Collapsible).title = title
+            sandboxes = self.query_one(SandboxesView)
+            await sandboxes.sync_sample(sample)
+
+
+class SampleLimits(Widget):
+    DEFAULT_CSS = """
+    SampleLimits {
+        padding: 0 0 0 0;
+        color: $secondary;
+        background: transparent;
+        height: auto;
+    }
+    SampleLimits Static {
+        background: transparent;
+        color: $secondary;
+    }
+    """
+
+    messages = reactive(0)
+    message_limit = reactive(0)
+    tokens = reactive(0)
+    token_limit = reactive(0)
+    started = reactive(0)
+    time_limit = reactive(0)
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def render(self) -> RenderableType:
+        limits = f"[bold]messages[/bold]: {self.messages}"
+        if self.message_limit:
+            limits = f"{limits} (limit {self.message_limit})"
+        limits = f"{limits}, [bold]tokens[/bold]: {self.tokens:,}"
+        if self.token_limit:
+            limits = f"{limits} ({self.token_limit:,})"
+        return limits
+
+    async def sync_sample(self, sample: ActiveSample) -> None:
+        self.messages = sample.total_messages
+        self.message_limit = sample.message_limit or 0
+        self.tokens = sample.total_tokens
+        self.token_limit = sample.token_limit or 0
 
 
 class SandboxesView(Vertical):
     DEFAULT_CSS = """
     SandboxesView {
-        padding: 0 0 1 0;
+        padding: 1 0 1 0;
         background: transparent;
         height: auto;
     }
     SandboxesView Static {
         background: transparent;
+    }
+    .clipboard-message {
+        margin-top: 1;
     }
     """
 
@@ -264,61 +307,48 @@ class SandboxesView(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(id="sandboxes-caption", markup=True)
-        yield Vertical(id="sandboxes")
-        yield Static(
-            "[italic]Hold down Alt (or Option) to select text for copying[/italic]",
-            id="sandboxes-footer",
-            markup=True,
-        )
+        yield Vertical(id="sandboxes-list")
 
-    async def sync_sandboxes(self, sandboxes: dict[str, SandboxConnection]) -> None:
-        def sandbox_connection_type() -> str:
-            connection = list(sandboxes.values())[0]
-            if isinstance(connection, SandboxConnectionLocal):
-                return "directories"
-            elif isinstance(connection, SandboxConnectionContainer):
-                return "containers"
-            else:
-                return "hosts"
+    async def sync_sample(self, sample: ActiveSample) -> None:
+        if len(sample.sandboxes) > 0:
+            self.display = True
+            sandboxes_caption = cast(Static, self.query_one("#sandboxes-caption"))
+            sandboxes_caption.update("[bold]sandbox containers:[/bold]")
 
-        def sandbox_connection_target(sandbox: SandboxConnection) -> str:
-            if isinstance(sandbox, SandboxConnectionLocal):
-                target = sandbox.working_dir
-            elif isinstance(sandbox, SandboxConnectionContainer):
-                target = sandbox.container
-            else:
-                target = sandbox.destination
-            return target.strip()
-
-        caption = cast(Static, self.query_one("#sandboxes-caption"))
-        caption.update(f"[bold]sandbox {sandbox_connection_type()}:[/bold]")
-
-        sandboxes_widget = self.query_one("#sandboxes")
-        sandboxes_widget.styles.margin = (
-            (0, 0, 1, 0) if len(sandboxes) > 1 else (0, 0, 0, 0)
-        )
-        await sandboxes_widget.remove_children()
-        await sandboxes_widget.mount_all(
-            [
-                Static(sandbox_connection_target(sandbox))
-                for sandbox in sandboxes.values()
-            ]
-        )
+            sandboxes_list = self.query_one("#sandboxes-list")
+            await sandboxes_list.remove_children()
+            await sandboxes_list.mount_all(
+                [Static(sandbox.command) for sandbox in sample.sandboxes.values()]
+            )
+            sandboxes_list.mount(
+                Static(
+                    "[italic]Hold down Alt (or Option) to select text for copying[/italic]",
+                    classes="clipboard-message",
+                    markup=True,
+                )
+            )
+        else:
+            self.display = False
 
 
 class SampleToolbar(Horizontal):
-    DEFAULT_CSS = """
-    SampleToolbar Button {
+    CANCEL_SCORE_OUTPUT = "cancel_score_output"
+    CANCEL_RAISE_ERROR = "cancel_raise_error"
+    PENDING_STATUS = "pending_status"
+    PENDING_CAPTION = "pending_caption"
+
+    DEFAULT_CSS = f"""
+    SampleToolbar Button {{
         margin-bottom: 1;
         margin-right: 2;
         min-width: 20;
-    }
-    SampleToolbar #cancel-score-output {
+    }}
+    SampleToolbar #{CANCEL_SCORE_OUTPUT} {{
         color: $primary-darken-3;
-    }
-    SampleToolbar #cancel-raise-error {
+    }}
+    SampleToolbar #{CANCEL_RAISE_ERROR} {{
         color: $warning-darken-3;
-    }
+    }}
     """
 
     def __init__(self) -> None:
@@ -326,30 +356,30 @@ class SampleToolbar(Horizontal):
         self.sample: ActiveSample | None = None
 
     def compose(self) -> ComposeResult:
-        with VerticalGroup(id="pending-status"):
-            yield Static("Executing...", id="pending-caption")
+        with VerticalGroup(id=self.PENDING_STATUS):
+            yield Static("Executing...", id=self.PENDING_CAPTION)
             yield HorizontalGroup(EventLoadingIndicator(), Clock())
         yield Button(
             Text("Cancel (Score)"),
-            id="cancel-score-output",
+            id=self.CANCEL_SCORE_OUTPUT,
             tooltip="Cancel the sample and score whatever output has been generated so far.",
         )
         yield Button(
             Text("Cancel (Error)"),
-            id="cancel-raise-error",
+            id=self.CANCEL_RAISE_ERROR,
             tooltip="Cancel the sample and raise an error (task will exit unless fail_on_error is set)",
         )
 
     def on_mount(self) -> None:
-        self.query_one("#pending-status").visible = False
-        self.query_one("#cancel-score-output").display = False
-        self.query_one("#cancel-raise-error").display = False
+        self.query_one("#" + self.PENDING_STATUS).visible = False
+        self.query_one("#" + self.CANCEL_SCORE_OUTPUT).display = False
+        self.query_one("#" + self.CANCEL_RAISE_ERROR).display = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if self.sample:
-            if event.button.id == "cancel-score-output":
+            if event.button.id == self.CANCEL_SCORE_OUTPUT:
                 self.sample.interrupt("score")
-            elif event.button.id == "cancel-raise-error":
+            elif event.button.id == self.CANCEL_RAISE_ERROR:
                 self.sample.interrupt("error")
 
     async def sync_sample(self, sample: ActiveSample | None) -> None:
@@ -358,10 +388,12 @@ class SampleToolbar(Horizontal):
         # track the sample
         self.sample = sample
 
-        pending_status = self.query_one("#pending-status")
+        pending_status = self.query_one("#" + self.PENDING_STATUS)
         clock = self.query_one(Clock)
-        cancel_score_output = cast(Button, self.query_one("#cancel-score-output"))
-        cancel_with_error = cast(Button, self.query_one("#cancel-raise-error"))
+        cancel_score_output = cast(
+            Button, self.query_one("#" + self.CANCEL_SCORE_OUTPUT)
+        )
+        cancel_with_error = cast(Button, self.query_one("#" + self.CANCEL_RAISE_ERROR))
         if sample and not sample.completed:
             # update visibility and button status
             self.display = True
@@ -376,7 +408,9 @@ class SampleToolbar(Horizontal):
             )
             if last_event and last_event.pending:
                 pending_status.visible = True
-                pending_caption = cast(Static, self.query_one("#pending-caption"))
+                pending_caption = cast(
+                    Static, self.query_one("#" + self.PENDING_CAPTION)
+                )
                 pending_caption_text = (
                     "Generating..."
                     if isinstance(last_event, ModelEvent)

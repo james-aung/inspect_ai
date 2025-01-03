@@ -13,6 +13,7 @@ from inspect_ai._util.registry import (
 from inspect_ai.log import (
     EvalMetric,
     EvalResults,
+    EvalSampleScore,
     EvalScore,
 )
 from inspect_ai.log._log import EvalSampleReductions
@@ -175,7 +176,10 @@ def scorer_for_metrics(
         )
 
         # process metric values
-        metric_value = metric(scores)
+        if len(scores) > 0:
+            metric_value = metric(scores)
+        else:
+            metric_value = float("Nan")
         base_metric_name = registry_log_name(metric)
 
         # If the metric value is a dictionary, turn each of the entries
@@ -233,7 +237,9 @@ def scorers_from_metric_dict(
     results: list[EvalScore] = []
 
     # Expand any metric keys
-    resolved_metrics = resolve_glob_metric_keys(metrics, scores[0])
+    resolved_metrics = (
+        resolve_glob_metric_keys(metrics, scores[0]) if len(scores) > 0 else metrics
+    )
 
     for metric_key, metric_list in resolved_metrics.items():
         # filter scores to a list of scalars with the value of the metric name
@@ -258,10 +264,32 @@ def scorers_from_metric_dict(
         for target_metric in metric_list:
             # compute the metric value
             metric_name = registry_log_name(target_metric)
-            result_metrics[metric_name] = EvalMetric(
-                name=metric_name,
-                value=cast(float, target_metric(metric_scores)),
-            )
+            if len(metric_scores) > 0:
+                value = target_metric(metric_scores)
+            else:
+                value = float("Nan")
+
+            # convert the value to a float (either by expanding the dict or array)
+            # or by casting to a float
+            if isinstance(value, dict):
+                for key, val in value.items():
+                    name = f"{metric_name}_{key}"
+                    result_metrics[name] = EvalMetric(
+                        name=name,
+                        value=cast(float, val),
+                    )
+            elif isinstance(value, list):
+                for idx, item in enumerate(value):
+                    name = f"{metric_name}_{idx}"
+                    result_metrics[name] = EvalMetric(
+                        name=name,
+                        value=cast(float, item),
+                    )
+            else:
+                result_metrics[metric_name] = EvalMetric(
+                    name=metric_name,
+                    value=cast(float, value),
+                )
 
         # create a scorer result for this metric
         # TODO: What if there is separate simple scorer which has a name collision with
@@ -318,7 +346,7 @@ def resolve_glob_metric_keys(
 
 def reduce_scores(
     scores: list[SampleScore], reducer: ScoreReducer
-) -> list[SampleScore]:
+) -> list[EvalSampleScore]:
     # Group the scores by sample_id
     grouped_scores: dict[str, list[SampleScore]] = defaultdict(list)
     for sample_score in scores:
@@ -326,11 +354,11 @@ def reduce_scores(
             grouped_scores[str(sample_score.sample_id)].append(sample_score)
 
     # reduce the scores
-    reduced_scores: list[SampleScore] = []
+    reduced_scores: list[EvalSampleScore] = []
     for scores in grouped_scores.values():
-        reduced = reducer(cast(list[Score], scores))
+        reduced = reducer([score.score for score in scores])
         reduced_scores.append(
-            SampleScore(
+            EvalSampleScore(
                 sample_id=scores[0].sample_id,
                 value=reduced.value,
                 answer=reduced.answer,

@@ -58,7 +58,7 @@ class GenerateConfigArgs(TypedDict, total=False):
     """How many chat completion choices to generate for each input message. OpenAI, Grok, Google, and TogetherAI only."""
 
     logprobs: bool | None
-    """Return log probabilities of the output tokens. OpenAI, Google, Grok, TogetherAI, and Huggingface only."""
+    """Return log probabilities of the output tokens. OpenAI, Google, Grok, TogetherAI, Huggingface, llama-cpp-python, and vLLM only."""
 
     top_logprobs: int | None
     """Number of most likely tokens (0-20) to return at each token position, each with an associated log probability. OpenAI, Google, Grok, and Huggingface only."""
@@ -71,6 +71,9 @@ class GenerateConfigArgs(TypedDict, total=False):
 
     cache_prompt: Literal["auto"] | bool | None
     """Whether to cache the prompt prefix. Defaults to "auto", which will enable caching for requests with tools. Anthropic only."""
+
+    reasoning_effort: Literal["low", "medium", "high"] | None
+    """Constrains effort on reasoning for reasoning models. Open AI o1 models only."""
 
 
 class GenerateConfig(BaseModel):
@@ -125,7 +128,7 @@ class GenerateConfig(BaseModel):
     """How many chat completion choices to generate for each input message. OpenAI, Grok, Google, TogetherAI, and vLLM only."""
 
     logprobs: bool | None = Field(default=None)
-    """Return log probabilities of the output tokens. OpenAI, Google, Grok, TogetherAI, Huggingface, and vLLM only."""
+    """Return log probabilities of the output tokens. OpenAI, Google, Grok, TogetherAI, Huggingface, llama-cpp-python, and vLLM only."""
 
     top_logprobs: int | None = Field(default=None)
     """Number of most likely tokens (0-20) to return at each token position, each with an associated log probability. OpenAI, Google, Grok, Huggingface, and vLLM only."""
@@ -138,6 +141,9 @@ class GenerateConfig(BaseModel):
 
     cache_prompt: Literal["auto"] | bool | None = Field(default=None)
     """Whether to cache the prompt prefix. Defaults to "auto", which will enable caching for requests with tools. Anthropic only."""
+
+    reasoning_effort: Literal["low", "medium", "high"] | None = Field(default=None)
+    """Constrains effort on reasoning for reasoning models. Open AI o1 models only."""
 
     def merge(
         self, other: Union["GenerateConfig", GenerateConfigArgs]

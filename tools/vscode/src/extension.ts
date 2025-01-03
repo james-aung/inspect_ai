@@ -26,6 +26,8 @@ import { InspectViewServer } from "./providers/inspect/inspect-view-server";
 import { InspectLogsWatcher } from "./providers/inspect/inspect-logs-watcher";
 import { activateLogNotify } from "./providers/lognotify";
 import { activateOpenLog } from "./providers/openlog";
+import { activateProtocolHandler } from "./providers/protocol-handler";
+import { activateInspectCommands } from "./providers/inspect/inspect-commands";
 
 const kInspectMinimumVersion = "0.3.8";
 
@@ -65,6 +67,9 @@ export async function activate(context: ExtensionContext) {
   // Initial the workspace
   await initializeWorkspace(stateManager);
 
+  // Initialize the protocol handler
+  activateProtocolHandler(context);
+
   // Inspect Manager watches for changes to inspect binary
   const inspectManager = activateInspectManager(context);
   context.subscriptions.push(inspectManager);
@@ -74,6 +79,9 @@ export async function activate(context: ExtensionContext) {
     stateManager,
     context
   );
+
+  // Activate commands interface
+  activateInspectCommands(stateManager, context);
 
   // Activate a watcher which inspects the active document and determines
   // the active task (if any)
@@ -93,6 +101,7 @@ export async function activate(context: ExtensionContext) {
 
   // initialiaze view server
   const server = new InspectViewServer(context, inspectManager);
+  context.subscriptions.push(server);
 
   // initialise logs watcher
   const logsWatcher = new InspectLogsWatcher(stateManager);

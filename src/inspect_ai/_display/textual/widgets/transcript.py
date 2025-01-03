@@ -10,10 +10,10 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from inspect_ai._util.content import ContentText
-from inspect_ai._util.format import format_function_call
 from inspect_ai._util.rich import lines_display
 from inspect_ai._util.transcript import (
     set_transcript_markdown_options,
+    transcript_function,
     transcript_markdown,
     transcript_separator,
 )
@@ -36,6 +36,7 @@ from inspect_ai.log._transcript import (
 from inspect_ai.model._chat_message import ChatMessage, ChatMessageUser
 from inspect_ai.model._render import messages_preceding_assistant
 from inspect_ai.tool._tool import ToolResult
+from inspect_ai.tool._tool_transcript import transcript_tool_call
 
 
 class TranscriptView(ScrollableContainer):
@@ -195,16 +196,7 @@ def render_tool_event(event: ToolEvent) -> list[EventDisplay]:
             display.extend(render_event(e) or [])
 
     # render the call
-    content: list[RenderableType] = []
-    if event.view:
-        if event.view.title:
-            content.append(Text.from_markup(f"[bold]{event.view.title}[/bold]\n"))
-        if event.view.format == "markdown":
-            content.append(transcript_markdown(event.view.content))
-        else:
-            content.append(event.view.content)
-    else:
-        content.append(render_function_call(event.function, event.arguments))
+    content = transcript_tool_call(event)
 
     # render the output
     if isinstance(event.result, list):
@@ -249,10 +241,12 @@ def render_score_event(event: ScoreEvent) -> EventDisplay:
     table.add_column("", justify="left")
     table.add_row("Target", str(event.target).strip())
     if event.score.answer:
-        table.add_row("Answer", transcript_markdown(event.score.answer))
+        table.add_row("Answer", transcript_markdown(event.score.answer, escape=True))
     table.add_row("Score", str(event.score.value).strip())
     if event.score.explanation:
-        table.add_row("Explanation", transcript_markdown(event.score.explanation))
+        table.add_row(
+            "Explanation", transcript_markdown(event.score.explanation, escape=True)
+        )
 
     return EventDisplay("score", table)
 
@@ -264,7 +258,7 @@ def render_subtask_event(event: SubtaskEvent) -> list[EventDisplay]:
         for e in event.events:
             display.extend(render_event(e) or [])
 
-    content: list[RenderableType] = [render_function_call(event.name, event.input)]
+    content: list[RenderableType] = [transcript_function(event.name, event.input)]
     if event.result:
         content.append(Text())
         if isinstance(event.result, str | int | float | bool | None):
@@ -307,11 +301,6 @@ def render_error_event(event: ErrorEvent) -> EventDisplay:
     return EventDisplay("error", event.error.traceback.strip())
 
 
-def render_function_call(function: str, arguments: dict[str, Any]) -> RenderableType:
-    call = format_function_call(function, arguments)
-    return transcript_markdown("```python\n" + call + "\n```\n")
-
-
 def render_as_json(json: Any) -> RenderableType:
     return transcript_markdown(
         "```json\n"
@@ -329,7 +318,7 @@ def render_message(
     ]
     text = text or message.text
     if text:
-        content.extend([transcript_markdown(text.strip())])
+        content.extend([transcript_markdown(text.strip(), escape=True)])
     return content
 
 

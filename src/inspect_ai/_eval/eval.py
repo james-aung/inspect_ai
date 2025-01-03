@@ -21,7 +21,8 @@ from inspect_ai.approval._policy import (
     approval_policies_from_config,
     config_from_approval_policies,
 )
-from inspect_ai.log import EvalConfig, EvalLog, EvalLogInfo, read_eval_log
+from inspect_ai.log import EvalConfig, EvalLog, EvalLogInfo
+from inspect_ai.log._file import read_eval_log_async
 from inspect_ai.log._recorders import create_recorder_for_format
 from inspect_ai.model import (
     GenerateConfig,
@@ -60,6 +61,7 @@ def eval(
     log_dir: str | None = None,
     log_format: Literal["eval", "json"] | None = None,
     limit: int | tuple[int, int] | None = None,
+    sample_id: str | int | list[str | int] | None = None,
     epochs: int | Epochs | None = None,
     fail_on_error: bool | float | None = None,
     debug_errors: bool | None = None,
@@ -69,10 +71,12 @@ def eval(
     max_samples: int | None = None,
     max_tasks: int | None = None,
     max_subprocesses: int | None = None,
+    max_sandboxes: int | None = None,
     log_samples: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     score: bool = True,
+    score_display: bool | None = None,
     **kwargs: Unpack[GenerateConfigArgs],
 ) -> list[EvalLog]:
     r"""Evaluate tasks using a Model.
@@ -109,6 +113,7 @@ def eval(
            to "eval", the native high-performance format).
         limit (int | tuple[int, int] | None): Limit evaluated samples
            (defaults to all samples).
+        sample_id (str | int | list[str | int] | None): Evaluate specific sample(s) from the dataset.
         epochs (int | Epochs | None): Epochs to repeat samples for and optional score
            reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error (bool | float | None): `True` to fail on first sample error
@@ -126,6 +131,8 @@ def eval(
            (default is 1)
         max_subprocesses (int | None): Maximum number of subprocesses to
            run in parallel (default is os.cpu_count())
+        max_sandboxes (int | None): Maximum number of sandboxes (per-provider)
+           to run in parallel.
         log_samples: (bool | None): Log detailed samples and scores (defaults to True)
         log_images: (bool | None): Log base64 encoded version of images,
            even if specified as a filename or URL (defaults to False)
@@ -133,6 +140,7 @@ def eval(
            If not specified, an appropriate default for the format and filesystem is
            chosen (10 for most all cases, 100 for JSON logs on remote filesystems).
         score (bool): Score output (defaults to True)
+        score_display (bool | None): Show scoring metrics in realtime (defaults to True)
         **kwargs (GenerateConfigArgs): Model generation options.
 
     Returns:
@@ -162,6 +170,7 @@ def eval(
             log_dir=log_dir,
             log_format=log_format,
             limit=limit,
+            sample_id=sample_id,
             epochs=epochs,
             fail_on_error=fail_on_error,
             debug_errors=debug_errors,
@@ -171,10 +180,12 @@ def eval(
             max_samples=max_samples,
             max_tasks=max_tasks,
             max_subprocesses=max_subprocesses,
+            max_sandboxes=max_sandboxes,
             log_samples=log_samples,
             log_images=log_images,
             log_buffer=log_buffer,
             score=score,
+            score_display=score_display,
             **kwargs,
         )
     )
@@ -197,6 +208,7 @@ async def eval_async(
     log_dir: str | None = None,
     log_format: Literal["eval", "json"] | None = None,
     limit: int | tuple[int, int] | None = None,
+    sample_id: str | int | list[str | int] | None = None,
     epochs: int | Epochs | None = None,
     fail_on_error: bool | float | None = None,
     debug_errors: bool | None = None,
@@ -206,10 +218,12 @@ async def eval_async(
     max_samples: int | None = None,
     max_tasks: int | None = None,
     max_subprocesses: int | None = None,
+    max_sandboxes: int | None = None,
     log_samples: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     score: bool = True,
+    score_display: bool | None = None,
     **kwargs: Unpack[GenerateConfigArgs],
 ) -> list[EvalLog]:
     r"""Evaluate tasks using a Model (async).
@@ -244,8 +258,9 @@ async def eval_async(
             (defaults to file log in ./logs directory).
         log_format (Literal["eval", "json"] | None): Format for writing log files (defaults
            to "eval", the native high-performance format).
-        limit (int | tuple[int, int] | None): Limit evaluated samples
+        limit (str | int | list[str | int] | None): Limit evaluated samples
             (defaults to all samples).
+        sample_id (str | list[str] | None): Evaluate specific sample(s) from the dataset.
         epochs (int | Epochs | None): Epochs to repeat samples for and optional score
             reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error (bool | float | None): `True` to fail on first sample error
@@ -262,6 +277,8 @@ async def eval_async(
            (default is 1)
         max_subprocesses (int | None): Maximum number of subprocesses to
             run in parallel (default is os.cpu_count())
+        max_sandboxes (int | None): Maximum number of sandboxes (per-provider)
+           to run in parallel.
         log_samples: (bool | None): Log detailed samples and scores (defaults to True)
         log_images: (bool | None): Log base64 encoded version of images,
             even if specified as a filename or URL (defaults to False)
@@ -269,6 +286,7 @@ async def eval_async(
            If not specified, an appropriate default for the format and filesystem is
            chosen (10 for most all cases, 100 for JSON logs on remote filesystems).
         score (bool): Score output (defaults to True)
+        score_display (bool | None): Show scoring metrics in realtime (defaults to True)
         **kwargs (GenerateConfigArgs): Model generation options.
 
     Returns:
@@ -334,6 +352,10 @@ async def eval_async(
         # resolve solver
         solver = chain(solver) if isinstance(solver, list) else solver
 
+        # ensure consistency of limit and sample_id
+        if sample_id is not None and limit is not None:
+            raise ValueError("You cannot specify both sample_id and limit.")
+
         # resolve epochs
         if isinstance(epochs, int):
             epochs = Epochs(epochs)
@@ -344,6 +366,7 @@ async def eval_async(
         epochs_reducer = epochs.reducer if epochs else None
         eval_config = EvalConfig(
             limit=limit,
+            sample_id=sample_id,
             epochs=epochs.epochs if epochs else None,
             epochs_reducer=reducer_log_names(epochs_reducer)
             if epochs_reducer
@@ -357,10 +380,12 @@ async def eval_async(
             max_samples=max_samples,
             max_tasks=max_tasks,
             max_subprocesses=max_subprocesses,
+            max_sandboxes=max_sandboxes,
             sandbox_cleanup=sandbox_cleanup,
             log_samples=log_samples,
             log_images=log_images,
             log_buffer=log_buffer,
+            score_display=score_display,
         )
 
         # run tasks - 2 codepaths, one for the traditional task at a time
@@ -439,6 +464,7 @@ def eval_retry(
     max_samples: int | None = None,
     max_tasks: int | None = None,
     max_subprocesses: int | None = None,
+    max_sandboxes: int | None = None,
     sandbox_cleanup: bool | None = None,
     trace: bool | None = None,
     fail_on_error: bool | float | None = None,
@@ -447,6 +473,7 @@ def eval_retry(
     log_images: bool | None = None,
     log_buffer: int | None = None,
     score: bool = True,
+    score_display: bool | None = None,
     max_retries: int | None = None,
     timeout: int | None = None,
     max_connections: int | None = None,
@@ -469,6 +496,8 @@ def eval_retry(
            (default is 1)
         max_subprocesses (int | None): Maximum number of subprocesses to
            run in parallel (default is os.cpu_count())
+        max_sandboxes (int | None): Maximum number of sandboxes (per-provider)
+           to run in parallel.
         sandbox_cleanup (bool | None): Cleanup sandbox environments after task completes
            (defaults to True)
         trace (bool | None): Trace message interactions with evaluated model to terminal.
@@ -485,6 +514,7 @@ def eval_retry(
            If not specified, an appropriate default for the format and filesystem is
            chosen (10 for most all cases, 100 for JSON logs on remote filesystems).
         score (bool): Score output (defaults to True)
+        score_display (bool | None): Show scoring metrics in realtime (defaults to True)
         max_retries (int | None):
            Maximum number of times to retry request.
         timeout: (int | None):
@@ -511,6 +541,7 @@ def eval_retry(
             max_samples=max_samples,
             max_tasks=max_tasks,
             max_subprocesses=max_subprocesses,
+            max_sandboxes=max_sandboxes,
             sandbox_cleanup=sandbox_cleanup,
             fail_on_error=fail_on_error,
             debug_errors=debug_errors,
@@ -518,6 +549,7 @@ def eval_retry(
             log_images=log_images,
             log_buffer=log_buffer,
             score=score,
+            score_display=score_display,
             max_retries=max_retries,
             timeout=timeout,
             max_connections=max_connections,
@@ -534,6 +566,7 @@ async def eval_retry_async(
     max_samples: int | None = None,
     max_tasks: int | None = None,
     max_subprocesses: int | None = None,
+    max_sandboxes: int | None = None,
     sandbox_cleanup: bool | None = None,
     fail_on_error: bool | float | None = None,
     debug_errors: bool | None = None,
@@ -541,6 +574,7 @@ async def eval_retry_async(
     log_images: bool | None = None,
     log_buffer: int | None = None,
     score: bool = True,
+    score_display: bool | None = None,
     max_retries: int | None = None,
     timeout: int | None = None,
     max_connections: int | None = None,
@@ -563,6 +597,7 @@ async def eval_retry_async(
            (default is 1)
         max_subprocesses (int): Maximum number of subprocesses to
            run in parallel (default is os.cpu_count())
+        max_sandboxes (int): Maximum number of sandboxes (per-provider) to run in parallel.
         sandbox_cleanup (bool | None): Cleanup sandbox environments after task completes
            (defaults to True)
         fail_on_error (bool | float | None): `True` to fail on first sample error
@@ -578,6 +613,7 @@ async def eval_retry_async(
            If not specified, an appropriate default for the format and filesystem is
            chosen (10 for most all cases, 100 for JSON logs on remote filesystems).
         score (bool): Score output (defaults to True)
+        score_display (bool | None): Show scoring metrics in realtime (defaults to True)
         max_retries (int | None):
            Maximum number of times to retry request.
         timeout: (int | None):
@@ -600,9 +636,9 @@ async def eval_retry_async(
             task
             if isinstance(task, EvalLog)
             else (
-                read_eval_log(task.name)
+                await read_eval_log_async(task.name)
                 if isinstance(task, EvalLogInfo)
-                else read_eval_log(task)
+                else await read_eval_log_async(task)
             )
         )
         for task in tasks
@@ -641,6 +677,7 @@ async def eval_retry_async(
         task_args = eval_log.eval.task_args
         tags = eval_log.eval.tags
         limit = eval_log.eval.config.limit
+        sample_id = eval_log.eval.config.sample_id
         epochs = (
             Epochs(eval_log.eval.config.epochs, eval_log.eval.config.epochs_reducer)
             if eval_log.eval.config.epochs
@@ -653,6 +690,7 @@ async def eval_retry_async(
         max_samples = max_samples or eval_log.eval.config.max_samples
         max_tasks = max_tasks or eval_log.eval.config.max_tasks
         max_subprocesses = max_subprocesses or eval_log.eval.config.max_subprocesses
+        max_sandboxes = max_sandboxes or eval_log.eval.config.max_sandboxes
         sandbox_cleanup = (
             sandbox_cleanup
             if sandbox_cleanup is not None
@@ -671,6 +709,11 @@ async def eval_retry_async(
         )
         log_buffer = (
             log_buffer if log_buffer is not None else eval_log.eval.config.log_buffer
+        )
+        score_display = (
+            score_display
+            if score_display is not None
+            else eval_log.eval.config.score_display
         )
 
         config = eval_log.plan.config
@@ -698,6 +741,7 @@ async def eval_retry_async(
                 log_dir=log_dir,
                 log_format=log_format,
                 limit=limit,
+                sample_id=sample_id,
                 epochs=epochs,
                 fail_on_error=fail_on_error,
                 debug_errors=debug_errors,
@@ -707,10 +751,12 @@ async def eval_retry_async(
                 max_samples=max_samples,
                 max_tasks=max_tasks,
                 max_subprocesses=max_subprocesses,
+                max_sandboxes=max_sandboxes,
                 log_samples=log_samples,
                 log_images=log_images,
                 log_buffer=log_buffer,
                 score=score,
+                score_display=score_display,
                 **dict(config),
             )
         )[0]

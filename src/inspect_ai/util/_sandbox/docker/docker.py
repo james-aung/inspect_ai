@@ -5,17 +5,20 @@ from logging import getLogger
 from pathlib import Path, PurePosixPath
 from typing import Literal, Union, cast, overload
 
-import aiofiles
 from typing_extensions import override
 
 from inspect_ai.util._subprocess import ExecResult
 
 from ..environment import (
     SandboxConnection,
-    SandboxConnectionContainer,
     SandboxEnvironment,
+    SandboxEnvironmentConfigType,
 )
-from ..limits import verify_exec_result_size, verify_read_file_size
+from ..limits import (
+    SandboxEnvironmentLimits,
+    verify_exec_result_size,
+    verify_read_file_size,
+)
 from ..registry import sandboxenv
 from .cleanup import (
     cli_cleanup,
@@ -39,7 +42,7 @@ from .compose import (
 from .config import CONFIG_FILES, DOCKERFILE
 from .internal import build_internal_image, is_internal_image
 from .prereqs import validate_prereqs
-from .util import ComposeProject, sandbox_log, task_project_name
+from .util import ComposeProject, task_project_name
 
 logger = getLogger(__name__)
 
@@ -51,7 +54,14 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         return CONFIG_FILES + [DOCKERFILE]
 
     @classmethod
-    async def task_init(cls, task_name: str, config: str | None) -> None:
+    def default_concurrency(cls) -> int | None:
+        count = os.cpu_count() or 1
+        return 2 * count
+
+    @classmethod
+    async def task_init(
+        cls, task_name: str, config: SandboxEnvironmentConfigType | None
+    ) -> None:
         # validate prereqs
         await validate_prereqs()
 
@@ -68,7 +78,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             await compose_build(project)
 
             # cleanup images created during build
-            await compose_cleanup_images(project)
+            await compose_cleanup_images(project, timeout=60)
 
             services = await compose_services(project)
             for name, service in services.items():
@@ -98,13 +108,14 @@ class DockerSandboxEnvironment(SandboxEnvironment):
     @override
     @classmethod
     async def sample_init(
-        cls, task_name: str, config: str | None, metadata: dict[str, str]
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        metadata: dict[str, str],
     ) -> dict[str, SandboxEnvironment]:
-        sandbox_log("setup")
-
         # create environment variables for sample metadata
         env: dict[str, str] = {}
-        if config and Path(config).exists():
+        if isinstance(config, str) and Path(config).exists():
             # read the config file
             with open(config, "r") as f:
                 config_text = f.read()
@@ -175,7 +186,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
     async def sample_cleanup(
         cls,
         task_name: str,
-        config: str | None,
+        config: SandboxEnvironmentConfigType | None,
         environments: dict[str, SandboxEnvironment],
         interrupted: bool,
     ) -> None:
@@ -191,7 +202,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 
     @classmethod
     async def task_cleanup(
-        cls, task_name: str, config: str | None, cleanup: bool
+        cls, task_name: str, config: SandboxEnvironmentConfigType | None, cleanup: bool
     ) -> None:
         await project_cleanup_shutdown(cleanup)
 
@@ -241,6 +252,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             project=self._project,
             timeout=timeout,
             input=input,
+            output_limit=SandboxEnvironmentLimits.MAX_EXEC_OUTPUT_SIZE,
         )
         verify_exec_result_size(exec_result)
         if exec_result.returncode == 126 and "permission denied" in exec_result.stdout:
@@ -250,7 +262,9 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 
     @override
     async def write_file(self, file: str, contents: str | bytes) -> None:
-        sandbox_log(f"write_file: {file}")
+        # exec function w/ timeout
+        async def exec(cmd: list[str]) -> ExecResult[str]:
+            return await self.exec(cmd, timeout=60)
 
         # resolve relative file paths
         file = self.container_file(file)
@@ -297,8 +311,8 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         local_tmpfile.close()  # this will also delete the file
 
         if not hasattr(self, "_docker_user"):
-            uid = (await self.exec(["id", "-u"])).stdout.strip()
-            gid = (await self.exec(["id", "-g"])).stdout.strip()
+            uid = (await exec(["id", "-u"])).stdout.strip()
+            gid = (await exec(["id", "-g"])).stdout.strip()
             self._docker_user = (uid, gid)
 
         await compose_command(
@@ -312,12 +326,13 @@ class DockerSandboxEnvironment(SandboxEnvironment):
                 container_tmpfile,
             ],
             project=self._project,
+            timeout=60,
         )
 
         parent = PurePosixPath(file).parent
 
         # We do these steps in a shell script for efficiency to avoid round-trips to docker.
-        res_cp = await self.exec(
+        res_cp = await exec(
             [
                 "sh",
                 "-e",
@@ -332,7 +347,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 
         if res_cp.returncode != 0:
             if "Permission denied" in res_cp.stderr:
-                ls_result = await self.exec(["ls", "-la", "."])
+                ls_result = await exec(["ls", "-la", "."])
                 error_string = f"Permission was denied. Error details: {res_cp.stderr}; ls -la: {ls_result.stdout}; {self._docker_user=}"
                 raise PermissionError(error_string)
             elif (
@@ -353,8 +368,6 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 
     @override
     async def read_file(self, file: str, text: bool = True) -> Union[str, bytes]:
-        sandbox_log(f"read_file: {file}")
-
         # Write the contents to a temp file
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             # resolve relative file paths
@@ -369,6 +382,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
                     dest=os.path.basename(dest_file),
                     project=self._project,
                     cwd=os.path.dirname(dest_file),
+                    output_limit=SandboxEnvironmentLimits.MAX_READ_FILE_SIZE,
                 )
             except RuntimeError as ex:
                 # extract the message and normalise case
@@ -392,11 +406,11 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 
             # read and return w/ appropriate encoding
             if text:
-                async with aiofiles.open(dest_file, "r", encoding="utf-8") as f:
-                    return await f.read()
+                with open(dest_file, "r", newline="", encoding="utf-8") as f:
+                    return f.read()
             else:
-                async with aiofiles.open(dest_file, "rb") as f:
-                    return await f.read()
+                with open(dest_file, "rb") as f:
+                    return f.read()
 
     @override
     async def connection(self) -> SandboxConnection:
@@ -411,14 +425,15 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             None,
         )
 
-        # return container login
+        # return container connection
         if container:
-            return SandboxConnectionContainer(
-                command=f"docker exec -it {container} /bin/bash --login",
-                container=container,
-                working_dir=self._working_dir,
+            return SandboxConnection(
+                command=f"docker exec -it {container} bash -l",
+                vscode_command=[
+                    "remote-containers.attachToRunningContainer",
+                    container,
+                ],
             )
-
         # error (not currently running)
         else:
             raise ConnectionError(
@@ -435,7 +450,9 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 async def container_working_dir(
     service: str, project: ComposeProject, default: str = "/"
 ) -> str:
-    result = await compose_exec([service, "sh", "-c", "pwd"], project)
+    result = await compose_exec(
+        [service, "sh", "-c", "pwd"], timeout=60, project=project
+    )
     if result.success:
         return result.stdout.strip()
     else:

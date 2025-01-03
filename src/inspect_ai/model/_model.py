@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 import os
+import time
 from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any, Callable, Literal, Type, cast
@@ -18,7 +19,7 @@ from tenacity import (
 )
 
 from inspect_ai._util.constants import DEFAULT_MAX_CONNECTIONS
-from inspect_ai._util.content import ContentText
+from inspect_ai._util.content import Content, ContentImage, ContentText
 from inspect_ai._util.hooks import init_hooks, override_api_key, send_telemetry
 from inspect_ai._util.platform import platform_init
 from inspect_ai._util.registry import (
@@ -28,16 +29,18 @@ from inspect_ai._util.registry import (
     registry_unqualified_name,
 )
 from inspect_ai._util.retry import log_rate_limit_retry
+from inspect_ai._util.trace import trace_action
 from inspect_ai.tool import Tool, ToolChoice, ToolFunction, ToolInfo
-from inspect_ai.tool._tool_def import ToolDef
+from inspect_ai.tool._tool_def import ToolDef, tool_defs
 from inspect_ai.util import concurrency
 
 from ._cache import CacheEntry, CachePolicy, cache_fetch, cache_store
-from ._call_tools import disable_parallel_tools, tools_info
+from ._call_tools import disable_parallel_tools, tool_call_view, tools_info
 from ._chat_message import (
     ChatMessage,
     ChatMessageAssistant,
     ChatMessageSystem,
+    ChatMessageTool,
     ChatMessageUser,
 )
 from ._generate_config import (
@@ -161,6 +164,10 @@ class ModelAPI(abc.ABC):
         """Any tool use in a message stream means that tools must be passed."""
         return False
 
+    def tool_result_images(self) -> bool:
+        """Tool results can containe images"""
+        return False
+
 
 class Model:
     """Model interface."""
@@ -246,7 +253,7 @@ class Model:
         async with self._connection_concurrency(config):
             return await self._generate(
                 input=input,
-                tools=tools_info(tools),
+                tools=tools,
                 tool_choice=tool_choice,
                 config=config,
                 cache=cache,
@@ -255,13 +262,22 @@ class Model:
     async def _generate(
         self,
         input: list[ChatMessage],
-        tools: list[ToolInfo],
+        tools: list[Tool]
+        | list[ToolDef]
+        | list[ToolInfo]
+        | list[Tool | ToolDef | ToolInfo],
         tool_choice: ToolChoice | None,
         config: GenerateConfig,
         cache: bool | CachePolicy = False,
     ) -> ModelOutput:
         # default to 'auto' for tool_choice (same as underlying model apis)
         tool_choice = tool_choice if tool_choice else "auto"
+
+        # extract tool defs if we can
+        tdefs = tool_defs([tool for tool in tools if not isinstance(tool, ToolInfo)])
+
+        # resolve all tools into tool_info
+        tools = tools_info(tools)
 
         # if we have a specific tool selected then filter out the others
         if isinstance(tool_choice, ToolFunction):
@@ -279,6 +295,11 @@ class Model:
             if not self.api.tools_required():
                 tools = []
             tool_choice = "none"
+
+        # break tool image content out into user messages if the model doesn't
+        # support tools returning images
+        if not self.api.tool_result_images():
+            input = tool_result_images_as_user_message(input)
 
         # optionally collapse *consecutive* messages into one -
         # (some apis e.g. anthropic require this)
@@ -352,24 +373,39 @@ class Model:
                 cache="write" if cache else None,
             )
 
-            result = await self.api.generate(
-                input=input,
-                tools=tools,
-                tool_choice=tool_choice,
-                config=config,
-            )
+            with trace_action(logger, "Model", f"generate ({str(self)})"):
+                time_start = time.perf_counter()
+                result = await self.api.generate(
+                    input=input,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    config=config,
+                )
+                time_elapsed = time.perf_counter() - time_start
+
             if isinstance(result, tuple):
                 output, call = result
             else:
                 output = result
                 call = None
 
+            # update output with time elapsed
+            output.time = time_elapsed
+
+            # add views to tool calls
+            for choice in output.choices:
+                for tool_call in choice.message.tool_calls or []:
+                    tool_call.view = tool_call_view(tool_call, tdefs)
+
             # complete the transcript event
             complete(output, call)
 
             # record usage
             if output.usage:
+                # record usage
                 record_model_usage(f"{self}", output.usage)
+
+                # send telemetry if its hooked up
                 await send_telemetry(
                     "model_usage",
                     json.dumps(dict(model=str(self), usage=output.usage.model_dump())),
@@ -667,6 +703,37 @@ def simple_input_messages(
     return messages
 
 
+def tool_result_images_as_user_message(
+    messages: list[ChatMessage],
+) -> list[ChatMessage]:
+    return functools.reduce(tool_result_images_reducer, messages, [])
+
+
+def tool_result_images_reducer(
+    messages: list[ChatMessage],
+    message: ChatMessage,
+) -> list[ChatMessage]:
+    # append the message
+    messages.append(message)
+
+    # if there are tool result images, pull them out into a ChatUserMessage
+    if isinstance(message, ChatMessageTool) and isinstance(message.content, list):
+        user_content: list[Content] = []
+        for i in range(0, len(message.content)):
+            if isinstance(message.content[i], ContentImage):
+                user_content.append(message.content[i])
+                message.content[i] = ContentText(
+                    text="Image content is in the message below."
+                )
+        if len(user_content) > 0:
+            messages.append(
+                ChatMessageUser(content=user_content, tool_call_id=message.tool_call_id)
+            )
+
+    # return messages
+    return messages
+
+
 # Functions to reduce consecutive user messages to a single user message -> required for some models
 def collapse_consecutive_user_messages(
     messages: list[ChatMessage],
@@ -757,6 +824,11 @@ def init_sample_model_usage() -> None:
 def record_model_usage(model: str, usage: ModelUsage) -> None:
     set_model_usage(model, usage, sample_model_usage_context_var.get(None))
     set_model_usage(model, usage, model_usage_context_var.get(None))
+
+    # update active sample
+    from inspect_ai.log._samples import set_active_sample_total_tokens
+
+    set_active_sample_total_tokens(sample_total_tokens())
 
 
 def set_model_usage(

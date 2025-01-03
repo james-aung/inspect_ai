@@ -31,18 +31,18 @@ def trace_assistant_message(
         for m in messages_preceding_assistant(input):
             trace_panel(
                 title=m.role.capitalize(),
-                content=transcript_markdown(m.text),
+                content=transcript_markdown(m.text, escape=True),
             )
 
         # start with assistant content
         content: list[RenderableType] = (
-            [transcript_markdown(message.text)] if message.text else []
+            [transcript_markdown(message.text, escape=True)] if message.text else []
         )
 
         # print tool calls
         if message.tool_calls:
             content.append(Text())
-            content.append(render_tool_calls(message.tool_calls))
+            content.extend(render_tool_calls(message.tool_calls))
 
         # print the assistant message
         trace_panel(title="Assistant", content=content)

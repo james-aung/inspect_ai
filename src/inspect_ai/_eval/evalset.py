@@ -65,6 +65,7 @@ def eval_set(
     log_level_transcript: str | None = None,
     log_format: Literal["eval", "json"] | None = None,
     limit: int | tuple[int, int] | None = None,
+    sample_id: str | int | list[str | int] | None = None,
     epochs: int | Epochs | None = None,
     fail_on_error: bool | float | None = None,
     debug_errors: bool | None = None,
@@ -74,6 +75,7 @@ def eval_set(
     max_samples: int | None = None,
     max_tasks: int | None = None,
     max_subprocesses: int | None = None,
+    max_sandboxes: int | None = None,
     log_samples: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
@@ -125,6 +127,7 @@ def eval_set(
           log files (defaults to "eval", the native high-performance format).
         limit (int | tuple[int, int] | None): Limit evaluated samples
            (defaults to all samples).
+        sample_id (str | int | list[str | int] | None): Evaluate specific sample(s) from the dataset.
         epochs (int | Epochs | None): Epochs to repeat samples for and optional score
            reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error (bool | float | None): `True` to fail on first sample error
@@ -142,6 +145,8 @@ def eval_set(
            (default is 1)
         max_subprocesses (int | None): Maximum number of subprocesses to
            run in parallel (default is os.cpu_count())
+        max_sandboxes (int | None): Maximum number of sandboxes (per-provider)
+           to run in parallel.
         log_samples: (bool | None): Log detailed samples and scores (defaults to True)
         log_images: (bool | None): Log base64 encoded version of images,
             even if specified as a filename or URL (defaults to False)
@@ -181,6 +186,7 @@ def eval_set(
             log_dir=log_dir,
             log_format=log_format,
             limit=limit,
+            sample_id=sample_id,
             epochs=epochs,
             fail_on_error=fail_on_error,
             debug_errors=debug_errors,
@@ -190,6 +196,7 @@ def eval_set(
             max_samples=max_samples,
             max_tasks=max_tasks,
             max_subprocesses=max_subprocesses,
+            max_sandboxes=max_sandboxes,
             log_samples=log_samples,
             log_images=log_images,
             log_buffer=log_buffer,

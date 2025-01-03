@@ -20,7 +20,7 @@ Inspect has several built-in tools, including:
 
 -   [Bash and Python](#sec-bash-and-python) for executing arbitrary shell and Python code.
 
--   [Web Browser](#sec-web-browser), which provides the model with a headless Chromimum web browser that supports navigation, history, and mouse/keyboard interactions.
+-   [Web Browser](#sec-web-browser), which provides the model with a headless Chromium web browser that supports navigation, history, and mouse/keyboard interactions.
 
 -   [Web Search](#sec-web-search), which uses the Google Search API to execute and summarise web searches.
 
@@ -80,7 +80,7 @@ Note that when using tools with models, the models do not call the Python functi
 
 ## Tool Errors
 
-Various errors can occur during tool execution, especially when interacting with the file system or network or when using [Sandbox Environments](agents.qmd#sec-sandbox-environments) to execute code in a container sandbox. As a tool writer you need to decide how you'd like to handle error conditions. A number of approaches are possible:
+Various errors can occur during tool execution, especially when interacting with the file system or network or when using [Sandbox Environments](sandboxing.qmd) to execute code in a container sandbox. As a tool writer you need to decide how you'd like to handle error conditions. A number of approaches are possible:
 
 1.  Notify the model that an error occurred to see whether it can recover.
 
@@ -100,11 +100,11 @@ If you do not explicitly handle errors, then Inspect provides some default error
 
 -   `UnicodeDecodeError` — Occurs when the output from executing a process or reading a file is binary rather than text.
 
--   `OutputLimitExceededError` - Occurs when one or both of the output streams from `sandbox().exec()` exceed 1 MiB or when attempting to read a file over 100 MiB in size.
+-   `OutputLimitExceededError` - Occurs when one or both of the output streams from `sandbox().exec()` exceed 10 MiB or when attempting to read a file over 100 MiB in size.
 
 -   `ToolError` — Special error thrown by tools to indicate they'd like to report an error to the model.
 
-These are all errors that are *expected* (in fact the `SandboxEnvironemnt` interface documents them as such) and possibly recoverable by the model (try a different command, read a different file, etc.). Unexpected errors (e.g. a network error communicating with a remote service or container runtime) on the other hand are not automatically handled and result in the `Sample` failing with an error.
+These are all errors that are *expected* (in fact the `SandboxEnvironment` interface documents them as such) and possibly recoverable by the model (try a different command, read a different file, etc.). Unexpected errors (e.g. a network error communicating with a remote service or container runtime) on the other hand are not automatically handled and result in the `Sample` failing with an error.
 
 Many tools can simply rely on the default handling to provide reasonable behaviour around both expected and unexpected errors.
 
@@ -120,7 +120,7 @@ Another type of explicit handling is re-raising an error to bypass Inspect's def
 
 ``` python
 try:
-  result = await sandobox().exec(
+  result = await sandbox().exec(
     cmd=["decode", file], 
     timeout=timeout
   )
@@ -161,7 +161,7 @@ The following instance methods are available to tools that need to interact with
 
 {{< include _sandboxenv-interface.md >}}
 
-See the documentation on [Sandbox Environments](agents.qmd#sec-sandbox-environments) for additional details.
+See the documentation on [Sandbox Environments](sandboxing.qmd) for additional details.
 
 ## Tool Choice
 
@@ -277,13 +277,13 @@ def web_browser_go() -> Tool:
 
 Specifying `parallel=False` results in two behaviours:
 
-1.  Models that support turing off parallel tool calling (currently OpenAI and Grok) will have it disabled when tools with `parallel=False` are passed to `generate()`.
+1.  Models that support turning off parallel tool calling (currently OpenAI and Grok) will have it disabled when tools with `parallel=False` are passed to `generate()`.
 
 2.  Inspect will execute tool calls serially (so that even for models that don't let you disable parallel tool calling, you can still be assured they will not ever run in parallel).
 
 ## Bash and Python {#sec-bash-and-python}
 
-The `bash()` and `python()` tools enable execution of arbitrary shell commands and Python code, respectively. These tools require the use of a [Sandbox Environment](agents.qmd#sec-sandbox-environments) for the execution of untrusted code. For example, here is how you might use them in an evaluation where the model is asked to write code in order to solve capture the flag (CTF) challenges:
+The `bash()` and `python()` tools enable execution of arbitrary shell commands and Python code, respectively. These tools require the use of a [Sandbox Environment](sandboxing.qmd) for the execution of untrusted code. For example, here is how you might use them in an evaluation where the model is asked to write code in order to solve capture the flag (CTF) challenges:
 
 ``` python
 from inspect_ai.tool import bash, python
@@ -314,7 +314,7 @@ See the [Agents](#sec-agents) section for more details on how to build evaluatio
 
 ## Web Browser {#sec-web-browser}
 
-The web browser tools provids models with the ability to browse the web using a headless Chromium browser. Navigation, history, and mouse/keyboard interactions are all supported.
+The web browser tools provides models with the ability to browse the web using a headless Chromium browser. Navigation, history, and mouse/keyboard interactions are all supported.
 
 ### Configuration
 
@@ -408,7 +408,7 @@ RUN pip install playwright
 RUN playwright install
 RUN playwright install-deps 
 
-# Install other dependancies
+# Install other dependencies
 RUN pip install dm-env-rpc pillow bs4 lxml
 
 # Copy Python files alongside the Dockerfile

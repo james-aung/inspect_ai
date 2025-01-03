@@ -1,22 +1,30 @@
 import asyncio
 import contextlib
 from asyncio import CancelledError
-from typing import Any, AsyncIterator, Coroutine, Generic, Iterator
+from typing import Any, AsyncIterator, ClassVar, Coroutine, Generic, Iterator, cast
 
 import rich
 from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding, BindingType
+from textual.css.query import NoMatches
 from textual.events import Print
+from textual.widget import Widget
 from textual.widgets import TabbedContent, TabPane
+from textual.widgets.tabbed_content import ContentTabs
 from textual.worker import Worker, WorkerState
 from typing_extensions import override
 
+from inspect_ai._display.core.textual import textual_enable_mouse_support
+from inspect_ai._util.html import as_html_id
 from inspect_ai.log._samples import active_samples
 from inspect_ai.log._transcript import InputEvent, transcript
 
+from ...util._panel import InputPanel
 from ..core.config import task_config
 from ..core.display import (
+    TP,
     TR,
     TaskDisplay,
     TaskProfile,
@@ -50,6 +58,17 @@ class TaskScreenResult(Generic[TR]):
 class TaskScreenApp(App[TR]):
     CSS_PATH = "app.tcss"
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding(
+            "ctrl+c",
+            "quit",
+            "Interrupt",
+            tooltip="Interrupt the app and return to the command prompt.",
+            show=False,
+            priority=True,
+        )
+    ]
+
     def __init__(self) -> None:
         # call super
         super().__init__()
@@ -69,6 +88,12 @@ class TaskScreenApp(App[TR]):
 
         # enable rich hooks
         rich_initialise()
+
+    def _watch_app_focus(self, focus: bool) -> None:
+        super()._watch_app_focus(focus)
+
+        if focus and self.app._driver:
+            textual_enable_mouse_support(self.app._driver)
 
     def run_app(self, main: Coroutine[Any, Any, TR]) -> TaskScreenResult[TR]:
         # create the worker
@@ -173,7 +198,11 @@ class TaskScreenApp(App[TR]):
 
         # add task
         try:
-            yield self.query_one(TasksView).add_task(task)
+            task_view = self.query_one(TasksView)
+            task_view.set_display_metrics(
+                profile.eval_config.score_display is not False
+            )
+            yield task_view.add_task(task)
         finally:
             pass
 
@@ -217,11 +246,15 @@ class TaskScreenApp(App[TR]):
         self.update_tasks()
         self.update_samples()
         self.update_footer()
+        for input_panel in self.query(f".{InputPanel.DEFAULT_CLASSES}"):
+            cast(InputPanel, input_panel).update()
 
     # update the header title
     def update_title(self) -> None:
         # determine title
-        if len(self._tasks) > 0:
+        if self._worker and self._worker.is_cancelled:
+            title = "eval interrupted (cancelling running samples...)"
+        elif len(self._tasks) > 0:
             if self._parallel:
                 completed = sum(1 for task in self._tasks if task.result is not None)
                 title = f"{tasks_title(completed, self._total_tasks)}"
@@ -286,6 +319,12 @@ class TaskScreenApp(App[TR]):
 
         self.watch(tabs, "active", set_active_tab)
 
+    # activate the tasks tab
+    def activate_tasks_tab(self) -> None:
+        tasks = self.query_one(TasksView)
+        tasks.tasks.focus()  # force the tab to switch by focusing a child
+        self.query_one(ContentTabs).focus()  # focus the tab control
+
     # capture output and route to console view and our buffer
     def on_print(self, event: Print) -> None:
         # remove trailing newline
@@ -302,13 +341,68 @@ class TaskScreenApp(App[TR]):
     # map ctrl+c to cancelling the worker
     @override
     async def action_quit(self) -> None:
-        if self._worker and self._worker.is_running:
+        if self._worker and self._worker.is_running and not self._worker.is_cancelled:
             self._worker.cancel()
+            self.update_title()
+
+    # dynamic input panels
+    async def add_input_panel(self, panel: InputPanel) -> None:
+        tabs = self.query_one(TabbedContent)
+        await tabs.add_pane(
+            TabPane(panel.title, panel, id=as_input_panel_id(type(panel)))
+        )
+
+    def get_input_panel(self, panel_type: type) -> InputPanel | None:
+        try:
+            tab_pane = self.query_one(f"#{as_input_panel_id(panel_type)}")
+            if len(tab_pane.children) > 0:
+                return cast(InputPanel, tab_pane.children[0])
+            else:
+                return None
+        except NoMatches:
+            return None
+
+    class InputPanelHost(InputPanel.Host):
+        def __init__(self, app: "TaskScreenApp[TR]", tab_id: str) -> None:
+            self.app = app
+            self.tab_id = tab_id
+
+        def set_title(self, title: str) -> None:
+            tabs = self.app.query_one(TabbedContent)
+            tab = tabs.get_tab(self.tab_id)
+            tab.label = Text.from_markup(title)
+
+        def activate(self) -> None:
+            # show the tab
+            tabs = self.app.query_one(TabbedContent)
+            tabs.show_tab(self.tab_id)
+
+            # focus the first focuable child (this seems to be necessary
+            # to get textual to reliably make the switch). after that, focus
+            # the tabs control so the user can switch back w/ the keyboard
+            tab_pane = self.app.query_one(f"#{self.tab_id}")
+            panel = cast(InputPanel, tab_pane.children[0])
+            for child in panel.walk_children(Widget):
+                if child.focusable:
+                    child.focus()
+                    self.app.query_one(ContentTabs).focus()
+                    break
+
+        def deactivate(self) -> None:
+            tabs = self.app.query_one(TabbedContent)
+            if tabs.active == self.tab_id:
+                self.app.activate_tasks_tab()
+
+        def close(self) -> None:
+            tabs = self.app.query_one(TabbedContent)
+            tabs.remove_pane(self.tab_id)
+            self.app.activate_tasks_tab()
 
 
 class TextualTaskScreen(TaskScreen, Generic[TR]):
     def __init__(self, app: TaskScreenApp[TR]) -> None:
         self.app = app
+        self.lock = asyncio.Lock()
 
     def __exit__(self, *excinfo: Any) -> None:
         pass
@@ -358,3 +452,20 @@ class TextualTaskScreen(TaskScreen, Generic[TR]):
                 # reset width
                 if old_width:
                     console.width = old_width
+
+    @override
+    async def input_panel(self, panel_type: type[TP]) -> TP:
+        async with self.lock:
+            panel_widget = self.app.get_input_panel(panel_type)
+            if panel_widget is None:
+                panel_widget = panel_type(
+                    TaskScreenApp[TR].InputPanelHost(
+                        self.app, as_input_panel_id(panel_type)
+                    ),
+                )
+                await self.app.add_input_panel(panel_widget)
+            return cast(TP, panel_widget)
+
+
+def as_input_panel_id(panel_type: type) -> str:
+    return as_html_id("id-input-panel", panel_type.__name__)

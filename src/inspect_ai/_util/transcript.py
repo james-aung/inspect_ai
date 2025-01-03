@@ -1,4 +1,5 @@
 import html
+from typing import Any
 
 from rich.align import AlignMethod
 from rich.box import ROUNDED, Box
@@ -8,15 +9,17 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
+from .format import format_function_call
+
 
 def transcript_code_theme() -> str:
     return "github-dark"
 
 
-def transcript_markdown(content: str) -> Markdown:
+def transcript_markdown(content: str, *, escape: bool = False) -> Markdown:
     code_theme = transcript_code_theme()
     return Markdown(
-        html.escape(content),
+        html.escape(content) if escape else content,
         code_theme=code_theme,
         inline_code_lexer="python",
         inline_code_theme=code_theme,
@@ -80,6 +83,15 @@ def transcript_panel(
 def transcript_separator(title: str, color: str) -> RenderableType:
     return Rule(title=title, style=f"{color} bold", align="center", end="\n\n")
 
+
+def transcript_function(function: str, arguments: dict[str, Any]) -> RenderableType:
+    call = format_function_call(function, arguments)
+    return transcript_markdown("```python\n" + call + "\n```\n")
+
+
+DOUBLE_LINE = Box(
+    " ══ \n" "    \n" "    \n" "    \n" "    \n" "    \n" "    \n" "    \n"
+)
 
 LINE = Box(" ── \n" "    \n" "    \n" "    \n" "    \n" "    \n" "    \n" "    \n")
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.48
+
+- Properly shutdown the `inspect view` process when exiting VSCode.
+
+## 0.3.47
+
+- Minor improvements
+
+## 0.3.46
+
+- Update Bedrock models help link to point to more helpful page.
+
+## 0.3.45
+
+- `.eval` file links are now clickable in the terminal when an evaluation completes
+- Improve task listing performance when rendering the task list in the activity bar
+
+## 0.3.44
+
+- Fix incorrect url encoding when copying links to remote log files.
+
+## 0.3.43
+
+- Add support for links which open the log viewer directly in VSCode. You may copy links to remote log files from the logs panel of the Inspect Activity Panel.
+
 ## 0.3.42
 
 - Improve support for selecting text in the full screen terminal

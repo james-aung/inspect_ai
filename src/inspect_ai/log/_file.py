@@ -1,17 +1,15 @@
-import asyncio
 import os
 import re
 from logging import getLogger
 from typing import Any, Callable, Generator, Literal, cast
 
-import fsspec  # type: ignore
-from fsspec.asyn import AsyncFileSystem  # type: ignore
-from fsspec.core import split_protocol  # type: ignore
 from pydantic_core import to_json
 
+from inspect_ai._util._async import run_coroutine
 from inspect_ai._util.constants import ALL_LOG_FORMATS, EVAL_LOG_FORMAT
 from inspect_ai._util.file import (
     FileInfo,
+    async_fileystem,
     file,
     filesystem,
 )
@@ -86,7 +84,6 @@ def list_eval_logs(
 async def list_eval_logs_async(
     log_dir: str = os.environ.get("INSPECT_LOG_DIR", "./logs"),
     formats: list[Literal["eval", "json"]] | None = None,
-    filter: Callable[[EvalLog], bool] | None = None,
     recursive: bool = True,
     descending: bool = True,
     fs_options: dict[str, Any] = {},
@@ -100,9 +97,6 @@ async def list_eval_logs_async(
       log_dir (str): Log directory (defaults to INSPECT_LOG_DIR)
       formats (Literal["eval", "json"]): Formats to list (default
         to listing all formats)
-      filter (Callable[[EvalLog], bool]): Filter to limit logs returned.
-         Note that the EvalLog instance passed to the filter has only
-         the EvalLog header (i.e. does not have the samples or logging output).
       recursive (bool): List log files recursively (defaults to True).
       descending (bool): List in descending order.
       fs_options (dict[str, Any]): Optional. Additional arguments to pass through
@@ -114,38 +108,29 @@ async def list_eval_logs_async(
     # async filesystem if we can
     fs = filesystem(log_dir, fs_options)
     if fs.is_async():
-        async_fs = async_fileystem(log_dir, fs_options=fs_options)
-        if await async_fs._exists(log_dir):
-            # prevent caching of listings
-            async_fs.invalidate_cache(log_dir)
-            # list logs
-            if recursive:
-                files: list[dict[str, Any]] = []
-                async for _, _, filenames in async_fs._walk(log_dir, detail=True):
-                    files.extend(filenames.values())
+        async with async_fileystem(log_dir, fs_options=fs_options) as async_fs:
+            if await async_fs._exists(log_dir):
+                # prevent caching of listings
+                async_fs.invalidate_cache(log_dir)
+                # list logs
+                if recursive:
+                    files: list[dict[str, Any]] = []
+                    async for _, _, filenames in async_fs._walk(log_dir, detail=True):
+                        files.extend(filenames.values())
+                else:
+                    files = cast(
+                        list[dict[str, Any]],
+                        await async_fs._ls(log_dir, detail=True),
+                    )
+                logs = [fs._file_info(file) for file in files]
+                # resolve to eval logs
+                return log_files_from_ls(logs, formats, descending)
             else:
-                files = cast(
-                    list[dict[str, Any]],
-                    async_fs._ls(log_dir, detail=True),
-                )
-            logs = [fs._file_info(file) for file in files]
-            # resolve to eval logs
-            eval_logs = log_files_from_ls(logs, formats, descending)
-        else:
-            return []
-        # apply filter if requested
-        if filter:
-            log_headers = await read_eval_log_headers_async(eval_logs)
-            return [
-                log for header, log in zip(log_headers, eval_logs) if filter(header)
-            ]
-        else:
-            return eval_logs
+                return []
     else:
         return list_eval_logs(
             log_dir=log_dir,
             formats=formats,
-            filter=filter,
             recursive=recursive,
             descending=descending,
             fs_options=fs_options,
@@ -153,6 +138,22 @@ async def list_eval_logs_async(
 
 
 def write_eval_log(
+    log: EvalLog,
+    location: str | FileInfo | None = None,
+    format: Literal["eval", "json", "auto"] = "auto",
+) -> None:
+    """Write an evaluation log.
+
+    Args:
+       log (EvalLog): Evaluation log to write.
+       location (str | FileInfo): Location to write log to.
+       format (Literal["eval", "json", "auto"]): Write to format
+          (defaults to 'auto' based on `log_file` extension)
+    """
+    run_coroutine(write_eval_log_async(log, location, format))
+
+
+async def write_eval_log_async(
     log: EvalLog,
     location: str | FileInfo | None = None,
     format: Literal["eval", "json", "auto"] = "auto",
@@ -182,7 +183,7 @@ def write_eval_log(
         recorder_type = recorder_type_for_location(location)
     else:
         recorder_type = recorder_type_for_format(format)
-    recorder_type.write_log(location, log)
+    await recorder_type.write_log(location, log)
 
     logger.debug(f"Writing eval log to {location} completed")
 
@@ -249,6 +250,31 @@ def read_eval_log(
     Returns:
        EvalLog object read from file.
     """
+    return run_coroutine(
+        read_eval_log_async(log_file, header_only, resolve_attachments, format)
+    )
+
+
+async def read_eval_log_async(
+    log_file: str | FileInfo,
+    header_only: bool = False,
+    resolve_attachments: bool = False,
+    format: Literal["eval", "json", "auto"] = "auto",
+) -> EvalLog:
+    """Read an evaluation log.
+
+    Args:
+       log_file (str | FileInfo): Log file to read.
+       header_only (bool): Read only the header (i.e. exclude
+         the "samples" and "logging" fields). Defaults to False.
+       resolve_attachments (bool): Resolve attachments (e.g. images)
+          to their full content.
+       format (Literal["eval", "json", "auto"]): Read from format
+          (defaults to 'auto' based on `log_file` extension)
+
+    Returns:
+       EvalLog object read from file.
+    """
     # resolve to file path
     log_file = log_file if isinstance(log_file, str) else log_file.name
     logger.debug(f"Reading eval log from {log_file}")
@@ -258,7 +284,7 @@ def read_eval_log(
         recorder_type = recorder_type_for_location(log_file)
     else:
         recorder_type = recorder_type_for_format(format)
-    log = recorder_type.read_log(log_file, header_only)
+    log = await recorder_type.read_log(log_file, header_only)
 
     # resolve attachement if requested
     if resolve_attachments and log.samples:
@@ -280,22 +306,47 @@ def read_eval_log(
 def read_eval_log_headers(
     log_files: list[str] | list[FileInfo] | list[EvalLogInfo],
 ) -> list[EvalLog]:
-    return [read_eval_log(log_file, header_only=True) for log_file in log_files]
+    return run_coroutine(read_eval_log_headers_async(log_files))
 
 
 async def read_eval_log_headers_async(
     log_files: list[str] | list[FileInfo] | list[EvalLogInfo],
 ) -> list[EvalLog]:
-    results = await asyncio.gather(
-        *[
-            asyncio.to_thread(read_eval_log, log_file, header_only=True)
-            for log_file in log_files
-        ]
-    )
-    return results
+    return [
+        await read_eval_log_async(log_file, header_only=True) for log_file in log_files
+    ]
 
 
 def read_eval_log_sample(
+    log_file: str | FileInfo,
+    id: int | str,
+    epoch: int = 1,
+    resolve_attachments: bool = False,
+    format: Literal["eval", "json", "auto"] = "auto",
+) -> EvalSample:
+    """Read a sample from an evaluation log.
+
+    Args:
+       log_file (str | FileInfo): Log file to read.
+       id (int | str): Sample id to read.
+       epoch (int): Epoch for sample id (defaults to 1)
+       resolve_attachments (bool): Resolve attachments (e.g. images)
+          to their full content.
+       format (Literal["eval", "json", "auto"]): Read from format
+          (defaults to 'auto' based on `log_file` extension)
+
+    Returns:
+       EvalSample object read from file.
+
+    Raises:
+       IndexError: If the passed id and epoch are not found.
+    """
+    return run_coroutine(
+        read_eval_log_sample_async(log_file, id, epoch, resolve_attachments, format)
+    )
+
+
+async def read_eval_log_sample_async(
     log_file: str | FileInfo,
     id: int | str,
     epoch: int = 1,
@@ -326,7 +377,7 @@ def read_eval_log_sample(
         recorder_type = recorder_type_for_location(log_file)
     else:
         recorder_type = recorder_type_for_format(format)
-    sample = recorder_type.read_log_sample(log_file, id, epoch)
+    sample = await recorder_type.read_log_sample(log_file, id, epoch)
 
     if resolve_attachments:
         sample = resolve_sample_attachments(sample)
@@ -467,7 +518,7 @@ def log_file_info(info: FileInfo) -> "EvalLogInfo":
     )
 
 
-def eval_log_json(log: EvalLog) -> str:
+def eval_log_json(log: EvalLog) -> bytes:
     # serialize to json (ignore values that are unserializable)
     # these values often result from solvers using metadata to
     # pass around 'live' objects -- this is fine to do and we
@@ -477,14 +528,8 @@ def eval_log_json(log: EvalLog) -> str:
         indent=2,
         exclude_none=True,
         fallback=lambda _x: None,
-    ).decode()
+    )
 
 
-def async_fileystem(log_file: str, fs_options: dict[str, Any] = {}) -> AsyncFileSystem:
-    # determine protocol
-    protocol, _ = split_protocol(log_file)
-    protocol = protocol or "file"
-    # create filesystem
-    fs_options = fs_options.copy()
-    fs_options.update({"asynchronous": True, "loop": asyncio.get_event_loop()})
-    return fsspec.filesystem(protocol, **fs_options)
+def eval_log_json_str(log: EvalLog) -> str:
+    return eval_log_json(log).decode()

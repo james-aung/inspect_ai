@@ -1,54 +1,41 @@
+from __future__ import annotations
+
 import abc
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Literal, NamedTuple, Union, overload
+from typing import Any, Awaitable, Callable, Literal, NamedTuple, Union, overload
 
 from pydantic import BaseModel, Field
 
 from .._subprocess import ExecResult
 
-TaskInit = Callable[[str, str | None], Awaitable[None]]
-TaskCleanup = Callable[[str, str | None, bool], Awaitable[None]]
+TaskInit = Callable[[str, Union["SandboxEnvironmentConfigType", None]], Awaitable[None]]
+TaskCleanup = Callable[
+    [str, Union["SandboxEnvironmentConfigType", None], bool], Awaitable[None]
+]
 
 SampleInit = Callable[
-    [str, str | None, dict[str, str]], Awaitable[dict[str, "SandboxEnvironment"]]
+    [str, Union["SandboxEnvironmentConfigType", None], dict[str, str]],
+    Awaitable[dict[str, "SandboxEnvironment"]],
 ]
 SampleCleanup = Callable[
-    [str, str | None, dict[str, "SandboxEnvironment"], bool], Awaitable[None]
+    [
+        str,
+        Union["SandboxEnvironmentConfigType", None],
+        dict[str, "SandboxEnvironment"],
+        bool,
+    ],
+    Awaitable[None],
 ]
 
 
-class SandboxConnectionBase(BaseModel):
+class SandboxConnection(BaseModel):
+    """Information required to connect to sandbox."""
+
     command: str
     """Shell command to connect to sandbox."""
 
-    working_dir: str
-    """Agent working directory."""
-
-
-class SandboxConnectionLocal(SandboxConnectionBase):
-    type: Literal["local"] = Field(default="local")
-
-
-class SandboxConnectionContainer(SandboxConnectionBase):
-    type: Literal["container"] = Field(default="container")
-    """Sandbox login type."""
-
-    container: str
-    """Container name."""
-
-
-class SandboxConnectionSSH(SandboxConnectionBase):
-    type: Literal["ssh"] = Field(default="ssh")
-    """Sandbox login type."""
-
-    destination: str
-    """SSH destination server."""
-
-
-SandboxConnection = Union[
-    SandboxConnectionContainer, SandboxConnectionLocal, SandboxConnectionSSH
-]
-"""Information required to connect to sandbox."""
+    vscode_command: list[Any] | None = Field(default=None)
+    """Optional vscode command (+args) to connect to sandbox."""
 
 
 class SandboxEnvironment(abc.ABC):
@@ -64,24 +51,34 @@ class SandboxEnvironment(abc.ABC):
         return []
 
     @classmethod
-    async def task_init(cls, task_name: str, config: str | None) -> None:
+    def default_concurrency(cls) -> int | None:
+        """Default max_sandboxes for this provider (`None` means no maximum)"""
+        return None
+
+    @classmethod
+    async def task_init(
+        cls, task_name: str, config: SandboxEnvironmentConfigType | None
+    ) -> None:
         """Called at task startup initialize resources.
 
         Args:
           task_name (str): Name of task using the sandbox environment.
-          config (str): Implementation defined configuration file (optional).
+          config (SandboxEnvironmentConfigType): Implementation defined configuration (optional).
         """
         pass
 
     @classmethod
     async def sample_init(
-        cls, task_name: str, config: str | None, metadata: dict[str, str]
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        metadata: dict[str, str],
     ) -> dict[str, "SandboxEnvironment"]:
         """Initialize sandbox environments for a sample.
 
         Args:
           task_name (str): Name of task using the sandbox environment.
-          config (str): Implementation defined configuration file (optional).
+          config (SandboxEnvironmentConfigType): Implementation defined configuration (optional).
           metadata (dict[str,str]): Sample `metadata` field
 
         Returns:
@@ -96,7 +93,7 @@ class SandboxEnvironment(abc.ABC):
     async def sample_cleanup(
         cls,
         task_name: str,
-        config: str | None,
+        config: SandboxEnvironmentConfigType | None,
         environments: dict[str, "SandboxEnvironment"],
         interrupted: bool,
     ) -> None:
@@ -104,7 +101,7 @@ class SandboxEnvironment(abc.ABC):
 
         Args:
           task_name (str): Name of task using the sandbox environment.
-          config (str): Implementation defined configuration file (optional).
+          config (SandboxEnvironmentConfigType): Implementation defined configuration (optional).
           environments (dict[str,SandboxEnvironment]): Sandbox environments created for this sample.
           interrupted (bool): Was the task interrupted by an error or cancellation
         """
@@ -112,13 +109,13 @@ class SandboxEnvironment(abc.ABC):
 
     @classmethod
     async def task_cleanup(
-        cls, task_name: str, config: str | None, cleanup: bool
+        cls, task_name: str, config: SandboxEnvironmentConfigType | None, cleanup: bool
     ) -> None:
         """Called at task exit as a last chance to cleanup resources.
 
         Args:
           task_name (str): Name of task using the sandbox environment.
-          config (str): Implementation defined configuration file (optional).
+          config (SandboxEnvironmentConfigType): Implementation defined configuration (optional).
           cleanup (bool): Whether to actually cleanup environment resources
             (False if `--no-sandbox-cleanup` was specified)
         """
@@ -148,7 +145,7 @@ class SandboxEnvironment(abc.ABC):
         The current working directory for execution will be the per-sample
         filesystem context.
 
-        Each output stream (stdout and stderr) is limited to 1 MiB. If exceeded, an
+        Each output stream (stdout and stderr) is limited to 10 MiB. If exceeded, an
         `OutputLimitExceededError` will be raised.
 
         Args:
@@ -169,7 +166,7 @@ class SandboxEnvironment(abc.ABC):
           PermissionError: If the user does not have
             permission to execute the command.
           OutputLimitExceededError: If an output stream
-            exceeds the 1 MiB limit.
+            exceeds the 10 MiB limit.
         """
         ...
 
@@ -205,6 +202,10 @@ class SandboxEnvironment(abc.ABC):
 
         File size is limited to 100 MiB.
 
+        When reading text files, implementations should preserve newline constructs
+        (e.g. crlf should be preserved not converted to lf). This is equivalent
+        to specifying `newline=""` in a call to the Python `open()` function.
+
         Args:
           file (str): Path to file (relative file paths will resolve to the
             per-sample working directory).
@@ -227,6 +228,15 @@ class SandboxEnvironment(abc.ABC):
         ...
 
     async def connection(self) -> SandboxConnection:
+        """Information required to connect to sandbox environment.
+
+        Returns:
+           SandboxConnection: connection information
+
+        Raises:
+           NotImplementedError: For sandboxes that don't provide connections
+           ConnectionError: If sandbox is not currently running.
+        """
         raise NotImplementedError("connection not implemented")
 
 
@@ -248,8 +258,10 @@ class SandboxEnvironmentSpec(NamedTuple):
     """Specification of a SandboxEnvironment."""
 
     type: str
-    config: str | None = None
+    config: SandboxEnvironmentConfigType | None = None
 
+
+SandboxEnvironmentConfigType = BaseModel | str
 
 SandboxEnvironmentType = SandboxEnvironmentSpec | str | tuple[str, str]
 """SandboxEnvironmentSpec and str and tuple shorthands for it.

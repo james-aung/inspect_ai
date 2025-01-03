@@ -19,6 +19,8 @@ from rich.console import Console
 from inspect_ai.log import EvalConfig, EvalResults, EvalStats
 from inspect_ai.model import GenerateConfig, ModelName
 
+from ...util._panel import InputPanel
+
 
 @runtime_checkable
 class Progress(Protocol):
@@ -81,6 +83,8 @@ class TaskWithResult:
 
 TR = TypeVar("TR")
 
+TP = TypeVar("TP", bound=InputPanel)
+
 
 class TaskScreen(contextlib.AbstractContextManager["TaskScreen"]):
     def __exit__(self, *excinfo: Any) -> None:
@@ -95,11 +99,26 @@ class TaskScreen(contextlib.AbstractContextManager["TaskScreen"]):
     ) -> Iterator[Console]:
         yield rich.get_console()
 
+    async def input_panel(self, panel_type: type[TP]) -> TP:
+        raise NotImplementedError("input_panel not implemented by current display")
+
+
+@dataclass
+class TaskDisplayMetric:
+    scorer: str
+    name: str
+    value: float | int
+    reducer: str | None
+
 
 @runtime_checkable
 class TaskDisplay(Protocol):
     @contextlib.contextmanager
     def progress(self) -> Iterator[Progress]: ...
+
+    def sample_complete(self, complete: int, total: int) -> None: ...
+
+    def update_metrics(self, scores: list[TaskDisplayMetric]) -> None: ...
 
     def complete(self, result: TaskResult) -> None: ...
 

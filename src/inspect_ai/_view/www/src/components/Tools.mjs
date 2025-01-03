@@ -1,6 +1,8 @@
 // @ts-check
 /// <reference path="../types/prism.d.ts" />
 import Prism from "prismjs";
+import murmurhash from "murmurhash";
+
 import "prismjs/components/prism-python";
 import "prismjs/components/prism-bash";
 import "prismjs/components/prism-json";
@@ -49,7 +51,7 @@ export const resolveToolInput = (fn, toolArgs) => {
  * @param {string | undefined } props.input - The main input for this call
  * @param {string | undefined } props.inputType - The input type for this call
  * @param {import("../types/log").ToolCallContent} props.view - The tool call view
- * @param {string | number | boolean | (import("../types/log").ContentText | import("../types/log").ContentImage)[]} props.output - The tool output
+ * @param {string | number | boolean | import("../types/log").ContentText | import("../types/log").ContentImage | (import("../types/log").ContentText | import("../types/log").ContentImage)[]} props.output - The tool output
  * @param { "compact" | undefined } props.mode - The display mode for this call
  * @returns {import("preact").JSX.Element} The SampleTranscript component.
  */
@@ -61,26 +63,32 @@ export const ToolCallView = ({
   output,
   mode,
 }) => {
-  const icon =
-    mode === "compact"
-      ? ""
-      : html`<i
-          class="bi bi-tools"
-          style=${{
-            marginRight: "0.2rem",
-            opacity: "0.4",
-          }}
-        ></i>`;
-  const codeIndent = mode === "compact" ? "" : "";
+  // don't collapse if output includes an image
+  function isContentImage(value) {
+    if (value && typeof value === "object") {
+      if (value.type === "image") {
+        return true;
+      } else if (value.type === "tool") {
+        if (
+          Array.isArray(value.content) &&
+          value.content.some(isContentImage)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  const collapse = Array.isArray(output)
+    ? output.every((item) => !isContentImage(item))
+    : !isContentImage(output);
+
   return html`<div>
-    ${icon}
-    ${!view || view.title
-      ? html`<code style=${{ fontSize: FontSize.small }}
-          >${view?.title || functionCall}</code
-        >`
+    ${mode !== "compact" && (!view || view.title)
+      ? html`<${ToolTitle} title=${view?.title || functionCall} />`
       : ""}
     <div>
-      <div style=${{ marginLeft: `${codeIndent}` }}>
+      <div>
         <${ToolInput}
           type=${inputType}
           contents=${input}
@@ -89,13 +97,55 @@ export const ToolCallView = ({
         />
         ${output
           ? html`
-              <${ExpandablePanel} collapse=${true} border=${true} lines=${15}>
-              <${MessageContent} contents=${output} />
+              <${ExpandablePanel} collapse=${collapse} border=${true} lines=${15}>
+              <${MessageContent} contents=${normalizeContent(output)} />
               </${ExpandablePanel}>`
           : ""}
       </div>
     </div>
   </div>`;
+};
+
+/**
+ * Renders the ToolCallView component.
+ *
+ * @param {Object} props - The parameters for the component.
+ * @param {string} props.title - The title for the tool call
+ * @returns {import("preact").JSX.Element} The SampleTranscript component.
+ */
+const ToolTitle = ({ title }) => {
+  return html` <i
+      class="bi bi-tools"
+      style=${{
+        marginRight: "0.2rem",
+        opacity: "0.4",
+      }}
+    ></i>
+    <code style=${{ fontSize: FontSize.small }}>${title}</code>`;
+};
+
+/**
+ * Renders the ToolCallView component.
+ *
+ * @param {string | number | boolean | import("../types/log").ContentImage | import("../types/log").ContentText | (import("../types/log").ContentText | import("../types/log").ContentImage)[]} output - The tool output
+ * @returns {(import("../Types.mjs").ContentTool | import("../types/log").ContentText | import("../types/log").ContentImage)[]} The SampleTranscript component.
+ */
+const normalizeContent = (output) => {
+  if (Array.isArray(output)) {
+    return output;
+  } else {
+    return [
+      {
+        type: "tool",
+        content: [
+          {
+            type: "text",
+            text: String(output),
+          },
+        ],
+      },
+    ];
+  }
 };
 
 /**
@@ -105,11 +155,11 @@ export const ToolCallView = ({
  * @param {string} props.type - The function call
  * @param {string | undefined } props.contents - The main input for this call
  * @param {Record<string, string>} [props.style] - The style
- * @param {import("../types/log").ToolCallContent} props.view - The tool call view
+ * @param {import("../types/log").ToolCallContent} [props.view] - The tool call view
  * @returns {import("preact").JSX.Element | string} The SampleTranscript component.
  */
 export const ToolInput = ({ type, contents, view, style }) => {
-  if (!contents) {
+  if (!contents && !view?.content) {
     return "";
   }
 
@@ -133,7 +183,7 @@ export const ToolInput = ({ type, contents, view, style }) => {
           }
         }
       }
-    }, [toolInputRef.current]);
+    }, [contents, view, style]);
     return html`<${MarkdownDiv}
       markdown=${view.content}
       ref=${toolInputRef}
@@ -144,14 +194,15 @@ export const ToolInput = ({ type, contents, view, style }) => {
     useEffect(() => {
       const tokens = Prism.languages[type];
       if (toolInputRef.current && tokens) {
-        let resolvedContents = contents;
-        if (typeof contents === "object" || Array.isArray(contents)) {
-          resolvedContents = JSON.stringify(contents);
-        }
-        const html = Prism.highlight(resolvedContents, tokens, type);
-        toolInputRef.current.innerHTML = html;
+        Prism.highlightElement(toolInputRef.current);
       }
-    }, [toolInputRef.current, contents, type, view]);
+    }, [contents, type, view]);
+
+    contents =
+      typeof contents === "object" || Array.isArray(contents)
+        ? JSON.stringify(contents)
+        : contents;
+    const key = murmurhash.v3(contents);
 
     return html`<pre
       class="tool-output"
@@ -162,9 +213,9 @@ export const ToolInput = ({ type, contents, view, style }) => {
         ...style,
       }}
     >
-        <code ref=${toolInputRef} class="sourceCode${type
-      ? ` language-${type}`
-      : ""}" style=${{
+        <code ref=${toolInputRef} 
+          key=${key}
+          class="sourceCode${type ? ` language-${type}` : ""}" style=${{
       overflowWrap: "anywhere",
       whiteSpace: "pre-wrap",
     }}>
@@ -202,7 +253,7 @@ export const ToolOutput = ({ output, style }) => {
             html`<img
               src="${out.image}"
               style=${{
-                maxWidth: "100%",
+                maxWidth: "800px",
                 border: "solid var(--bs-border-color) 1px",
                 ...style,
               }}
@@ -269,18 +320,26 @@ const extractInputMetadata = (toolName) => {
 /**
  * @param {string} inputKey
  * @param {Object<string, any>} args
- * @returns {{ input: any, args: string[] }}
+ * @returns {{ input: string | undefined, args: string[] }}
  */
 const extractInput = (inputKey, args) => {
   const formatArg = (key, value) => {
     const quotedValue = typeof value === "string" ? `"${value}"` : value;
     return `${key}: ${quotedValue}`;
   };
-
   if (args) {
     if (Object.keys(args).length === 1) {
+      const inputRaw = args[Object.keys(args)[0]];
+
+      let input;
+      if (Array.isArray(inputRaw) || typeof inputRaw === "object") {
+        input = JSON.stringify(inputRaw, undefined, 2);
+      } else {
+        input = String(inputRaw);
+      }
+
       return {
-        input: args[Object.keys(args)[0]],
+        input: input,
         args: [],
       };
     } else if (args[inputKey]) {

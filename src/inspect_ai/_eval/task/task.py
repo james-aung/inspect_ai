@@ -7,6 +7,7 @@ from typing_extensions import TypedDict, Unpack
 
 from inspect_ai._util.logger import warn_once
 from inspect_ai._util.registry import is_registry_object, registry_info
+from inspect_ai.approval._policy import ApprovalPolicy, approval_policies_from_config
 from inspect_ai.dataset import Dataset, MemoryDataset, Sample
 from inspect_ai.log import EvalLog
 from inspect_ai.model import GenerateConfig
@@ -39,6 +40,8 @@ class Task:
 
     Args:
         dataset (Dataset | Sequence[Sample]): Dataset to evaluate
+        setup: (Solver | list[Solver] | None): Setup step (always run
+          even when the main `solver` is replaced).
         solver: (Solver | list[Solver]): Solver or list of solvers.
           Defaults to generate(), a normal call to the model.
         scorer: (Scorer | list[Scorer] | None): Scorer used to evaluate model output.
@@ -47,6 +50,9 @@ class Task:
         config (GenerateConfig): Model generation config.
         sandbox (SandboxEnvironmentType | None): Sandbox environment type
           (or optionally a str or tuple with a shorthand spec)
+        approval: (str | list[ApprovalPolicy] | None): Tool use approval policies.
+          Either a path to an approval policy config file or a list of approval policies.
+          Defaults to no approval policy.
         epochs (int | Epochs | None): Epochs to repeat samples for and optional score
            reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error (bool | float | None): `True` to fail on first sample error
@@ -68,11 +74,13 @@ class Task:
     def __init__(
         self,
         dataset: Dataset | Sequence[Sample] | None = None,
+        setup: Solver | list[Solver] | None = None,
         solver: Solver | list[Solver] = generate(),
         scorer: Scorer | list[Scorer] | None = None,
         metrics: list[Metric] | dict[str, list[Metric]] | None = None,
         config: GenerateConfig = GenerateConfig(),
         sandbox: SandboxEnvironmentType | None = None,
+        approval: str | list[ApprovalPolicy] | None = None,
         epochs: int | Epochs | None = None,
         fail_on_error: bool | float | None = None,
         message_limit: int | None = None,
@@ -119,6 +127,7 @@ class Task:
         self.dataset: Dataset = (
             dataset if isinstance(dataset, Dataset) else MemoryDataset(list(dataset))
         )
+        self.setup = setup
         self.solver = chain(solver) if isinstance(solver, list) else solver
         self.scorer = (
             scorer
@@ -130,6 +139,11 @@ class Task:
         self.metrics = metrics
         self.config = config
         self.sandbox = resolve_sandbox_environment(sandbox)
+        self.approval = (
+            approval_policies_from_config(approval)
+            if isinstance(approval, str)
+            else approval
+        )
         self.epochs = epochs.epochs if epochs else None
         self.epochs_reducer = epochs.reducer if epochs else None
         self.fail_on_error = fail_on_error

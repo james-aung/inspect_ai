@@ -2,6 +2,8 @@ project:
    type: website
    resources: 
       - CNAME
+      - llms.txt
+   post-render: scripts/post-render.sh
   
 website:
    title: "Inspect"
@@ -44,22 +46,29 @@ website:
           contents: 
             - solvers.qmd
             - tools.qmd
-            - agents.qmd
             - scorers.qmd
             - datasets.qmd
             - models.qmd
 
+        - section: "Agents"
+          contents:
+            - agents.qmd
+            - sandboxing.qmd
+            - agents-api.qmd
+            - human-agent.qmd
+            - approval.qmd
+
         - section: "Advanced"
           contents:
+            - eval-logs.qmd
             - eval-sets.qmd
             - text: "Errors & Limits"
               href: errors-and-limits.qmd
+            - typing.qmd
+            - tracing.qmd
             - caching.qmd
             - parallelism.qmd
-            - agents-api.qmd
             - interactivity.qmd
-            - approval.qmd
-            - eval-logs.qmd
             - extensions.qmd
 
 
@@ -96,7 +105,6 @@ format:
      toc-depth: 3
      number-sections: false
      code-annotations: select
-
 
 execute: 
   enabled: false

@@ -14,7 +14,11 @@ import { ApplicationIcons } from "../../appearance/Icons.mjs";
 import { MetaDataGrid } from "../../components/MetaDataGrid.mjs";
 import { FontSize, TextStyle } from "../../appearance/Fonts.mjs";
 import { ModelUsagePanel } from "../../usage/UsageCard.mjs";
-import { formatDateTime, formatNumber } from "../../utils/Format.mjs";
+import {
+  formatDateTime,
+  formatNumber,
+  formatPrettyDecimal,
+} from "../../utils/Format.mjs";
 
 /**
  * Renders the StateEventView component.
@@ -28,7 +32,16 @@ import { formatDateTime, formatNumber } from "../../utils/Format.mjs";
  */
 export const ModelEventView = ({ id, event, style }) => {
   const totalUsage = event.output.usage?.total_tokens;
-  const subtitle = totalUsage ? `(${formatNumber(totalUsage)} tokens)` : "";
+  const callTime = event.output.time;
+
+  const subItems = [];
+  if (totalUsage) {
+    subItems.push(`${formatNumber(totalUsage)} tokens`);
+  }
+  if (callTime) {
+    subItems.push(`${formatPrettyDecimal(callTime)} sec`);
+  }
+  const subtitle = subItems.length > 0 ? `(${subItems.join(", ")})` : "";
 
   // Note: despite the type system saying otherwise, this has appeared empircally
   // to sometimes be undefined
@@ -47,10 +60,11 @@ export const ModelEventView = ({ id, event, style }) => {
   };
 
   // For any user messages which immediately preceded this model call, including a
-  // panel and display those user messages
+  // panel and display those user messages (exclude tool_call messages as they
+  // are already shown in the tool call above)
   const userMessages = [];
   for (const msg of event.input.slice().reverse()) {
-    if (msg.role === "user") {
+    if (msg.role === "user" && !msg.tool_call_id) {
       userMessages.push(msg);
     } else {
       break;

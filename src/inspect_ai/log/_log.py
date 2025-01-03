@@ -23,7 +23,6 @@ from inspect_ai.model import (
     ModelUsage,
 )
 from inspect_ai.scorer import Score
-from inspect_ai.scorer._metric import SampleScore
 from inspect_ai.util._sandbox.environment import SandboxEnvironmentSpec
 
 from ._transcript import Event
@@ -36,6 +35,9 @@ SCORER_PLACEHOLDER = "88F74D2C"
 class EvalConfig(BaseModel):
     limit: int | tuple[int, int] | None = Field(default=None)
     """Sample limit (number of samples or range of samples)."""
+
+    sample_id: str | int | list[str | int] | None = Field(default=None)
+    """Evaluate specific sample(s)."""
 
     epochs: int | None = Field(default=None)
     """Number of epochs to run samples over."""
@@ -76,6 +78,9 @@ class EvalConfig(BaseModel):
     max_subprocesses: int | None = Field(default=None)
     """Maximum number of subprocesses to run concurrently."""
 
+    max_sandboxes: int | None = Field(default=None)
+    """Maximum number of sandboxes to run concurrently."""
+
     sandbox_cleanup: bool | None = Field(default=None)
     """Cleanup sandbox environments after task completes."""
 
@@ -87,6 +92,9 @@ class EvalConfig(BaseModel):
 
     log_buffer: int | None = Field(default=None)
     """Number of samples to buffer before writing log file."""
+
+    score_display: bool | None = Field(default=None)
+    """Display scoring metrics realtime."""
 
     @property
     def max_messages(self) -> int | None:
@@ -292,6 +300,10 @@ class EvalScore(BaseModel):
     """Additional scorer metadata."""
 
 
+class EvalSampleScore(Score):
+    sample_id: str | int | None = Field(default=None)
+
+
 class EvalSampleReductions(BaseModel):
     scorer: str
     """Name the of scorer"""
@@ -299,7 +311,7 @@ class EvalSampleReductions(BaseModel):
     reducer: str | None = Field(default=None)
     """Name the of reducer"""
 
-    samples: list[SampleScore]
+    samples: list[EvalSampleScore]
     """List of reduced scores"""
 
 

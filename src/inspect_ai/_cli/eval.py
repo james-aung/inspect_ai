@@ -12,7 +12,7 @@ from inspect_ai._util.constants import (
     DEFAULT_MAX_RETRIES,
 )
 from inspect_ai._util.file import filesystem
-from inspect_ai._util.samples import parse_samples_limit
+from inspect_ai._util.samples import parse_sample_id, parse_samples_limit
 from inspect_ai.log._file import log_file_info
 from inspect_ai.model import GenerateConfigArgs
 from inspect_ai.scorer._reducer import create_reducers
@@ -30,6 +30,7 @@ MAX_TASKS_HELP = "Maximum number of tasks to run in parallel (default is 1)"
 MAX_SUBPROCESSES_HELP = (
     "Maximum number of subprocesses to run in parallel (default is os.cpu_count())"
 )
+MAX_SANDBOXES_HELP = "Maximum number of sandboxes (per-provider) to run in parallel."
 NO_SANDBOX_CLEANUP_HELP = "Do not cleanup sandbox environments after task completes"
 FAIL_ON_ERROR_HELP = "Threshold of sample errors to tolerage (by default, evals fail when any error occurs). Value between 0 to 1 to set a proportion; value greater than 1 to set a count."
 NO_LOG_SAMPLES_HELP = "Do not include samples in the log file."
@@ -41,6 +42,7 @@ LOG_BUFFER_HELP = "Number of samples to buffer before writing log file. If not s
 NO_SCORE_HELP = (
     "Do not score model output (use the inspect score command to score output later)"
 )
+NO_SCORE_DISPLAY = "Do not display scoring metrics in realtime."
 MAX_CONNECTIONS_HELP = f"Maximum number of concurrent connections to Model API (defaults to {DEFAULT_MAX_CONNECTIONS})"
 MAX_RETRIES_HELP = (
     f"Maximum number of times to retry request (defaults to {DEFAULT_MAX_RETRIES})"
@@ -145,6 +147,12 @@ def eval_options(func: Callable[..., Any]) -> Callable[..., click.Context]:
         envvar="INSPECT_EVAL_LIMIT",
     )
     @click.option(
+        "--sample-id",
+        type=str,
+        help="Evaluate specific sample(s) (comma separated list of ids)",
+        envvar="INSPECT_EVAL_SAMPLE_ID",
+    )
+    @click.option(
         "--epochs",
         type=int,
         help=f"Number of times to repeat dataset (defaults to {DEFAULT_EPOCHS}) ",
@@ -185,6 +193,12 @@ def eval_options(func: Callable[..., Any]) -> Callable[..., click.Context]:
         type=int,
         help=MAX_SUBPROCESSES_HELP,
         envvar="INSPECT_EVAL_MAX_SUBPROCESSES",
+    )
+    @click.option(
+        "--max-sandboxes",
+        type=int,
+        help=MAX_SANDBOXES_HELP,
+        envvar="INSPECT_EVAL_MAX_SANDBOXES",
     )
     @click.option(
         "--message-limit",
@@ -243,6 +257,13 @@ def eval_options(func: Callable[..., Any]) -> Callable[..., click.Context]:
         is_flag=True,
         help=NO_SCORE_HELP,
         envvar="INSPECT_EVAL_NO_SCORE",
+    )
+    @click.option(
+        "--no-score-display",
+        type=bool,
+        is_flag=True,
+        help=NO_SCORE_HELP,
+        envvar="INSPECT_EVAL_SCORE_DISPLAY",
     )
     @click.option(
         "--max-tokens",
@@ -326,7 +347,7 @@ def eval_options(func: Callable[..., Any]) -> Callable[..., click.Context]:
         "--logprobs",
         type=bool,
         is_flag=True,
-        help="Return log probabilities of the output tokens. OpenAI, Google, Grok, TogetherAI, Huggingface, vLLM only.",
+        help="Return log probabilities of the output tokens. OpenAI, Google, Grok, TogetherAI, Huggingface, llama-cpp-python, and vLLM only.",
         envvar="INSPECT_EVAL_LOGPROBS",
     )
     @click.option(
@@ -354,6 +375,12 @@ def eval_options(func: Callable[..., Any]) -> Callable[..., click.Context]:
         type=click.Choice(["auto", "true", "false"]),
         help='Cache prompt prefix (Anthropic only). Defaults to "auto", which will enable caching for requests with tools.',
         envvar="INSPECT_EVAL_CACHE_PROMPT",
+    )
+    @click.option(
+        "--reasoning-effort",
+        type=click.Choice(["low", "medium", "high"]),
+        help="Constrains effort on reasoning for reasoning models. Open AI o1 models only.",
+        envvar="INSPECT_EVAL_REASONING_EFFORT",
     )
     @click.option(
         "--log-format",
@@ -391,6 +418,7 @@ def eval_command(
     epochs: int | None,
     epochs_reducer: str | None,
     limit: str | None,
+    sample_id: str | None,
     max_retries: int | None,
     timeout: int | None,
     max_connections: int | None,
@@ -412,18 +440,21 @@ def eval_command(
     parallel_tool_calls: bool | None,
     max_tool_output: int | None,
     cache_prompt: str | None,
+    reasoning_effort: str | None,
     message_limit: int | None,
     token_limit: int | None,
     time_limit: int | None,
     max_samples: int | None,
     max_tasks: int | None,
     max_subprocesses: int | None,
+    max_sandboxes: int | None,
     fail_on_error: bool | float | None,
     no_fail_on_error: bool | None,
     no_log_samples: bool | None,
     log_images: bool | None,
     log_buffer: int | None,
     no_score: bool | None,
+    no_score_display: bool | None,
     log_format: Literal["eval", "json"] | None,
     **common: Unpack[CommonOptions],
 ) -> None:
@@ -458,12 +489,14 @@ def eval_command(
         epochs=epochs,
         epochs_reducer=epochs_reducer,
         limit=limit,
+        sample_id=sample_id,
         message_limit=message_limit,
         token_limit=token_limit,
         time_limit=time_limit,
         max_samples=max_samples,
         max_tasks=max_tasks,
         max_subprocesses=max_subprocesses,
+        max_sandboxes=max_sandboxes,
         fail_on_error=fail_on_error,
         no_fail_on_error=no_fail_on_error,
         debug_errors=common["debug_errors"],
@@ -471,6 +504,7 @@ def eval_command(
         log_images=log_images,
         log_buffer=log_buffer,
         no_score=no_score,
+        no_score_display=no_score_display,
         is_eval_set=False,
         **config,
     )
@@ -543,6 +577,7 @@ def eval_set_command(
     epochs: int | None,
     epochs_reducer: str | None,
     limit: str | None,
+    sample_id: str | None,
     max_retries: int | None,
     timeout: int | None,
     max_connections: int | None,
@@ -564,18 +599,21 @@ def eval_set_command(
     parallel_tool_calls: bool | None,
     max_tool_output: int | None,
     cache_prompt: str | None,
+    reasoning_effort: str | None,
     message_limit: int | None,
     token_limit: int | None,
     time_limit: int | None,
     max_samples: int | None,
     max_tasks: int | None,
     max_subprocesses: int | None,
+    max_sandboxes: int | None,
     fail_on_error: bool | float | None,
     no_fail_on_error: bool | None,
     no_log_samples: bool | None,
     log_images: bool | None,
     log_buffer: int | None,
     no_score: bool | None,
+    no_score_display: bool | None,
     bundle_dir: str | None,
     bundle_overwrite: bool | None,
     log_format: Literal["eval", "json"] | None,
@@ -612,12 +650,14 @@ def eval_set_command(
         epochs=epochs,
         epochs_reducer=epochs_reducer,
         limit=limit,
+        sample_id=sample_id,
         message_limit=message_limit,
         token_limit=token_limit,
         time_limit=time_limit,
         max_samples=max_samples,
         max_tasks=max_tasks,
         max_subprocesses=max_subprocesses,
+        max_sandboxes=max_sandboxes,
         fail_on_error=fail_on_error,
         no_fail_on_error=no_fail_on_error,
         debug_errors=common["debug_errors"],
@@ -625,6 +665,7 @@ def eval_set_command(
         log_images=log_images,
         log_buffer=log_buffer,
         no_score=no_score,
+        no_score_display=no_score_display,
         is_eval_set=True,
         retry_attempts=retry_attempts,
         retry_wait=retry_wait,
@@ -662,12 +703,14 @@ def eval_exec(
     epochs: int | None,
     epochs_reducer: str | None,
     limit: str | None,
+    sample_id: str | None,
     message_limit: int | None,
     token_limit: int | None,
     time_limit: int | None,
     max_samples: int | None,
     max_tasks: int | None,
     max_subprocesses: int | None,
+    max_sandboxes: int | None,
     fail_on_error: bool | float | None,
     no_fail_on_error: bool | None,
     debug_errors: bool | None,
@@ -675,6 +718,7 @@ def eval_exec(
     log_images: bool | None,
     log_buffer: int | None,
     no_score: bool | None,
+    no_score_display: bool | None,
     is_eval_set: bool = False,
     retry_attempts: int | None = None,
     retry_wait: int | None = None,
@@ -699,8 +743,9 @@ def eval_exec(
         else None
     )
 
-    # resolve range
+    # resolve range and sample id
     eval_limit = parse_samples_limit(limit)
+    eval_sample_id = parse_sample_id(sample_id)
 
     # resolve fail_on_error
     if no_fail_on_error is True:
@@ -714,6 +759,7 @@ def eval_exec(
     log_images = False if log_images is False else None
     trace = True if trace else None
     score = False if no_score else True
+    score_display = False if no_score_display else None
 
     # build params
     params: dict[str, Any] = (
@@ -734,6 +780,7 @@ def eval_exec(
             log_dir=log_dir,
             log_format=log_format,
             limit=eval_limit,
+            sample_id=eval_sample_id,
             epochs=eval_epochs,
             fail_on_error=fail_on_error,
             debug_errors=debug_errors,
@@ -743,10 +790,12 @@ def eval_exec(
             max_samples=max_samples,
             max_tasks=max_tasks,
             max_subprocesses=max_subprocesses,
+            max_sandboxes=max_sandboxes,
             log_samples=log_samples,
             log_images=log_images,
             log_buffer=log_buffer,
             score=score,
+            score_display=score_display,
         )
         | kwargs
     )
@@ -822,6 +871,12 @@ def parse_comma_separated(value: str | None) -> list[str] | None:
     envvar="INSPECT_EVAL_MAX_SUBPROCESSES",
 )
 @click.option(
+    "--max-sandboxes",
+    type=int,
+    help=MAX_SANDBOXES_HELP,
+    envvar="INSPECT_EVAL_MAX_SANDBOXES",
+)
+@click.option(
     "--no-sandbox-cleanup",
     type=bool,
     is_flag=True,
@@ -876,6 +931,13 @@ def parse_comma_separated(value: str | None) -> list[str] | None:
     envvar="INSPECT_EVAL_SCORE",
 )
 @click.option(
+    "--no-score-display",
+    type=bool,
+    is_flag=True,
+    help=NO_SCORE_HELP,
+    envvar="INSPECT_EVAL_SCORE_DISPLAY",
+)
+@click.option(
     "--max-connections",
     type=int,
     help=MAX_CONNECTIONS_HELP,
@@ -891,6 +953,7 @@ def eval_retry_command(
     max_samples: int | None,
     max_tasks: int | None,
     max_subprocesses: int | None,
+    max_sandboxes: int | None,
     no_sandbox_cleanup: bool | None,
     trace: bool | None,
     fail_on_error: bool | float | None,
@@ -899,6 +962,7 @@ def eval_retry_command(
     log_images: bool | None,
     log_buffer: int | None,
     no_score: bool | None,
+    no_score_display: bool | None,
     max_connections: int | None,
     max_retries: int | None,
     timeout: int | None,
@@ -913,6 +977,7 @@ def eval_retry_command(
     log_samples = False if no_log_samples else None
     log_images = False if log_images is False else None
     score = False if no_score else True
+    score_display = False if no_score_display else None
 
     # resolve fail_on_error
     if no_fail_on_error is True:
@@ -934,6 +999,7 @@ def eval_retry_command(
         max_samples=max_samples,
         max_tasks=max_tasks,
         max_subprocesses=max_subprocesses,
+        max_sandboxes=max_sandboxes,
         sandbox_cleanup=sandbox_cleanup,
         trace=trace,
         fail_on_error=fail_on_error,
@@ -942,6 +1008,7 @@ def eval_retry_command(
         log_images=log_images,
         log_buffer=log_buffer,
         score=score,
+        score_display=score_display,
         max_retries=max_retries,
         timeout=timeout,
         max_connections=max_connections,

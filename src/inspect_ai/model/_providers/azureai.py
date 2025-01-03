@@ -89,6 +89,19 @@ class AzureAIAPI(ModelAPI):
             config=config,
         )
 
+        # collect known model_args (then delete them so we can pass the rest on)
+        def collect_model_arg(name: str) -> Any | None:
+            nonlocal model_args
+            value = model_args.get(name, None)
+            if value is not None:
+                model_args.pop(name)
+            return value
+
+        emulate_tools = collect_model_arg("emulate_tools")
+        self.emulate_tools = (
+            not not emulate_tools if emulate_tools is not None else None
+        )
+
         # resolve api_key
         if not self.api_key:
             self.api_key = os.environ.get(
@@ -118,8 +131,15 @@ class AzureAIAPI(ModelAPI):
         tool_choice: ToolChoice,
         config: GenerateConfig,
     ) -> ModelOutput | tuple[ModelOutput, ModelCall]:
-        # if its llama then do fake tool calls
-        handler: ChatAPIHandler | None = Llama31Handler() if self.is_llama() else None
+        # emulate tools (auto for llama, opt-in for others)
+        if self.emulate_tools is None and self.is_llama():
+            handler: ChatAPIHandler | None = Llama31Handler()
+        elif self.emulate_tools:
+            handler = Llama31Handler()
+        else:
+            handler = None
+
+        # resolve input
         if handler:
             input = handler.input_with_tools(input, tools)
 
@@ -190,11 +210,8 @@ class AzureAIAPI(ModelAPI):
 
     @override
     def max_tokens(self) -> int | None:
-        if self.is_llama3():
-            return 8192  # context window is 128k
-
-        elif self.is_llama():
-            return 2048  # llama2 context window is 4096
+        if self.is_llama():
+            return 2048  # llama2 and llama3 on azureai have context windows of 4096
 
         # Mistral uses a default of 8192 which is fine, so we don't mess with it
         # see: https://learn.microsoft.com/en-us/azure/ai-studio/how-to/deploy-models-mistral#request-schema
@@ -365,7 +382,7 @@ def chat_completion_assistant_message(
         return handler.parse_assistant_response(response.content, tools)
     else:
         return ChatMessageAssistant(
-            content=response.content,
+            content=response.content or "",
             tool_calls=[
                 chat_completion_tool_call(call, tools) for call in response.tool_calls
             ]

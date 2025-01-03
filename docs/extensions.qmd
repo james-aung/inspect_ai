@@ -107,7 +107,7 @@ eval(math, model = "custom/my-model")
 
 ## Sandboxes {#sec-sandbox-environment-extensions}
 
-[Sandbox Environments](agents.qmd#sec-sandbox-environments) provide a mechanism for sandboxing execution of tool code as well as providing more sophisticated infrastructure (e.g. creating network hosts for a cybersecurity eval). Inspect comes with two sandbox environments built in:
+[Sandbox Environments](sandboxing.qmd) provide a mechanism for sandboxing execution of tool code as well as providing more sophisticated infrastructure (e.g. creating network hosts for a cybersecurity eval). Inspect comes with two sandbox environments built in:
 
 | Environment Type | Description |
 |----------------------------|--------------------------------------------|
@@ -126,8 +126,12 @@ class PodmanSandboxEnvironment(SandboxEnvironment):
         ...
 
     @classmethod
+    def default_concurrency(cls) -> int | None:
+        ...
+
+    @classmethod
     async def task_init(
-        cls, task_name: str, config: str | None
+        cls, task_name: str, config: SandboxEnvironmentConfigType | None
     ) -> None:
         ...
 
@@ -135,7 +139,7 @@ class PodmanSandboxEnvironment(SandboxEnvironment):
     async def sample_init(
         cls, 
         task_name: str, 
-        config: str | None, 
+        config: SandboxEnvironmentConfigType | None, 
         metadata: dict[str, str]
     ) -> dict[str, SandboxEnvironment]:
         ...
@@ -144,7 +148,7 @@ class PodmanSandboxEnvironment(SandboxEnvironment):
     async def sample_cleanup(
         cls,
         task_name: str,
-        config: str | None,
+        config: SandboxEnvironmentConfigType | None,
         environments: dict[str, SandboxEnvironment],
         interrupted: bool,
     ) -> None:
@@ -152,7 +156,10 @@ class PodmanSandboxEnvironment(SandboxEnvironment):
 
     @classmethod
     async def task_cleanup(
-        cls, task_name: str, config: str | None, cleanup: bool
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        cleanup: bool,
     ) -> None:
        ...
 
@@ -177,6 +184,7 @@ The class methods take care of various stages of initialisation, setup, and tear
 | Method | Lifecycle | Purpose |
 |-------------------|-------------------|----------------------------------|
 | `config_files()` | Called once to determine the names of 'default' config files for this provider (e.g. 'compose.yaml'). |  |
+| `default_concurrency()` | Called once to determine the default maximum number of sandboxes to run in parallel. Return `None` for no limit (the default behavior). |  |
 | `task_init()` | Called once for each unique sandbox environment config before executing the tasks in an `eval()` run. | Expensive initialisation operations (e.g. pulling or building images) |
 | `sample_init()` | Called at the beginning of each `Sample`. | Create `SandboxEnvironment` instances for the sample. |
 | `sample_cleanup()` | Called at the end of each `Sample` | Cleanup `SandboxEnvironment` instances for the sample. |
@@ -253,6 +261,22 @@ Task(
 )
 ```
 
+Specialised configuration types which derive from Pydantic's `BaseModel` can also be passed as the `config` argument to `SandboxEnvironmentSpec`. Note: they must be hashable (i.e. `frozen=True`).
+
+``` python
+class PodmanSandboxEnvironmentConfig(BaseModel, frozen=True):
+    socket: str
+    runtime: str
+
+Task(
+    ...,
+    sandbox=SandboxEnvironmentSpec(
+        "podman",
+        PodmanSandboxEnvironmentConfig(socket="/podman-socket", runtime="crun"),
+    )
+)
+```
+
 ## Approvers {#sec-extensions-approvers}
 
 [Approvers](approval.qmd) enable you to create fine-grained policies for approving tool calls made by models. For example, the following are all supported:
@@ -300,7 +324,7 @@ The `_registry.py` file serves a place to import things that you wan't registere
 from .approvers import auto_approver
 ```
 
-You can then register your `auto_approver` Inspect extension (and anyting else imported into `_registry.py`) like this in `pyproject.toml`:
+You can then register your `auto_approver` Inspect extension (and anything else imported into `_registry.py`) like this in `pyproject.toml`:
 
 ::: {.panel-tabset group="entry-points"}
 ## Setuptools

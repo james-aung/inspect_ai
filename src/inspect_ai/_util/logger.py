@@ -1,6 +1,7 @@
+import atexit
 import os
-from contextvars import ContextVar
 from logging import (
+    DEBUG,
     INFO,
     WARNING,
     FileHandler,
@@ -11,6 +12,7 @@ from logging import (
     getLevelName,
     getLogger,
 )
+from pathlib import Path
 
 import rich
 from rich.console import ConsoleRenderable
@@ -18,17 +20,25 @@ from rich.logging import RichHandler
 from rich.text import Text
 from typing_extensions import override
 
-from inspect_ai._util.constants import (
+from .constants import (
     ALL_LOG_LEVELS,
     DEFAULT_LOG_LEVEL,
     DEFAULT_LOG_LEVEL_TRANSCRIPT,
     HTTP,
     HTTP_LOG_LEVEL,
     PKG_NAME,
-    SANDBOX,
-    SANDBOX_LOG_LEVEL,
+    TRACE,
+    TRACE_LOG_LEVEL,
 )
-from inspect_ai._util.error import PrerequisiteError
+from .error import PrerequisiteError
+from .trace import (
+    TraceFormatter,
+    compress_trace_log,
+    inspect_trace_file,
+    rotate_trace_files,
+)
+
+TRACE_FILE_NAME = "trace.log"
 
 
 # log handler that filters messages to stderr and the log file
@@ -51,6 +61,18 @@ class LogHandler(RichHandler):
             self.file_logger_level = int(getLevelName(file_logger_level.upper()))
         else:
             self.file_logger_level = 0
+
+        # add a trace file handler
+        rotate_trace_files()  # remove oldest if > 10 trace files
+        env_trace_file = os.environ.get("INSPECT_TRACE_FILE", None)
+        trace_file = Path(env_trace_file) if env_trace_file else inspect_trace_file()
+        self.trace_logger = FileHandler(trace_file)
+        self.trace_logger.setFormatter(TraceFormatter())
+        atexit.register(compress_trace_log(self.trace_logger))
+
+        # set trace level
+        trace_level = os.environ.get("INSPECT_TRACE_LEVEL", TRACE_LOG_LEVEL)
+        self.trace_logger_level = int(getLevelName(trace_level.upper()))
 
     @override
     def emit(self, record: LogRecord) -> None:
@@ -79,6 +101,10 @@ class LogHandler(RichHandler):
         ):
             self.file_logger.emit(record)
 
+        # write to trace if the trace level matches.
+        if self.trace_logger and record.levelno >= self.trace_logger_level:
+            self.trace_logger.emit(record)
+
         # eval log always gets info level and higher records
         # eval log only gets debug or http if we opt-in
         write = record.levelno >= self.transcript_levelno
@@ -95,12 +121,12 @@ def init_logger(
     log_level: str | None = None, log_level_transcript: str | None = None
 ) -> None:
     # backwards compatibility for 'tools'
-    if log_level == "tools":
-        log_level = "sandbox"
+    if log_level == "sandbox" or log_level == "tools":
+        log_level = "trace"
 
     # register http and tools levels
     addLevelName(HTTP, HTTP_LOG_LEVEL)
-    addLevelName(SANDBOX, SANDBOX_LOG_LEVEL)
+    addLevelName(TRACE, TRACE_LOG_LEVEL)
 
     def validate_level(option: str, level: str) -> None:
         if level not in ALL_LOG_LEVELS:
@@ -130,16 +156,17 @@ def init_logger(
     # init logging handler on demand
     global _logHandler
     if not _logHandler:
-        _logHandler = LogHandler(min(HTTP, levelno), transcript_levelno)
+        _logHandler = LogHandler(min(DEBUG, levelno), transcript_levelno)
         getLogger().addHandler(_logHandler)
 
     # establish default capture level
-    capture_level = min(HTTP, levelno)
+    capture_level = min(TRACE, levelno)
 
     # see all the messages (we won't actually display/write all of them)
     getLogger().setLevel(capture_level)
     getLogger(PKG_NAME).setLevel(capture_level)
     getLogger("httpx").setLevel(capture_level)
+    getLogger("botocore").setLevel(DEBUG)
 
     # set the levelno on the global handler
     _logHandler.display_level = levelno
@@ -154,19 +181,27 @@ def notify_logger_record(record: LogRecord, write: bool) -> None:
 
     if write:
         transcript()._event(LoggerEvent(message=LoggingMessage.from_log_record(record)))
-    if record.levelno <= INFO and "429" in record.getMessage():
-        _rate_limit_count_context_var.set(_rate_limit_count_context_var.get() + 1)
+    global _rate_limit_count
+    if (record.levelno <= INFO and "429" in record.getMessage()) or (
+        record.levelno == DEBUG
+        # See https://boto3.amazonaws.com/v1/documentation/api/latest/guide/retries.html#validating-retry-attempts
+        # for boto retry logic / log messages (this is tracking standard or adapative retries)
+        and "botocore.retries.standard" in record.name
+        and "Retry needed, retrying request after delay of:" in record.getMessage()
+    ):
+        _rate_limit_count = _rate_limit_count + 1
 
 
-_rate_limit_count_context_var = ContextVar[int]("rate_limit_count", default=0)
+_rate_limit_count = 0
 
 
 def init_http_rate_limit_count() -> None:
-    _rate_limit_count_context_var.set(0)
+    global _rate_limit_count
+    _rate_limit_count = 0
 
 
 def http_rate_limit_count() -> int:
-    return _rate_limit_count_context_var.get()
+    return _rate_limit_count
 
 
 def warn_once(logger: Logger, message: str) -> None:

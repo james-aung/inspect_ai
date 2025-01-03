@@ -102,6 +102,10 @@ def record_to_sample(record):
 dataset = json_dataset("popularity.jsonl", record_to_sample)
 ```
 
+### Typed Metadata
+
+{{< include _metadata_typing.md >}}
+
 ## Filter and Shuffle
 
 The `Dataset` class includes `filter()` and `shuffle()` methods, as well as support for the slice operator.

@@ -236,14 +236,20 @@ class BedrockAPI(ModelAPI):
         self,
         model_name: str,
         base_url: str | None,
+        api_key: str | None = None,
         config: GenerateConfig = GenerateConfig(),
         **model_args: Any,
     ):
         super().__init__(
             model_name=model_name,
             base_url=model_base_url(base_url, "BEDROCK_BASE_URL"),
+            api_key=api_key,
+            api_key_vars=[],
             config=config,
         )
+
+        # save model_args
+        self.model_args = model_args
 
         # import aioboto3 on demand
         try:
@@ -263,6 +269,9 @@ class BedrockAPI(ModelAPI):
 
     @override
     def max_tokens(self) -> int | None:
+        if "llama3-70" in self.model_name or "llama3-8" in self.model_name:
+            return 2048
+
         if "llama3" in self.model_name or "claude3" in self.model_name:
             return 4096
 
@@ -303,7 +312,7 @@ class BedrockAPI(ModelAPI):
         from botocore.exceptions import ClientError
 
         # The bedrock client
-        async with self.session.client(
+        async with self.session.client(  # type: ignore[call-overload]
             service_name="bedrock-runtime",
             endpoint_url=self.base_url,
             config=Config(
@@ -316,6 +325,7 @@ class BedrockAPI(ModelAPI):
                     mode="adaptive",
                 ),
             ),
+            **self.model_args,
         ) as client:
             # Process the tools
             resolved_tools = converse_tools(tools)
@@ -658,6 +668,8 @@ def converse_image_type(type: str) -> ConverseImageFormat:
             return "png"
         case "image/webp":
             return "webp"
+        case "image/jpeg":
+            return "jpeg"
         case _:
             raise ValueError(
                 f"Image mime type {type} is not supported for Bedrock Converse models."
@@ -673,7 +685,11 @@ def converse_tools(tools: list[ToolInfo]) -> list[ConverseTool] | None:
         tool_spec = ConverseToolSpec(
             name=tool.name,
             description=tool.description,
-            inputSchema={"json": tool.parameters.model_dump(exclude_none=True)},
+            inputSchema={
+                "json": tool.parameters.model_dump(
+                    exclude_none=True, exclude={"additionalProperties"}
+                )
+            },
         )
         result.append(ConverseTool(toolSpec=tool_spec))
     return result
