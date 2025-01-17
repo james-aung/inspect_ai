@@ -10,7 +10,7 @@ def read_file_chunk():
         Args:
             file (str): Path to the file to read
             start_line (int): Line number to start reading from (1-indexed)
-            max_lines (int): Maximum number of lines to read (default: 50, max: 100)
+            max_lines (int): Maximum number of lines to read (default: 50, max: 50)
 
         Returns:
             str: The requested lines from the file
@@ -24,8 +24,8 @@ def read_file_chunk():
         if max_lines < 1:
             raise ToolError("max_lines must be >= 1")
             
-        if max_lines > 100:
-            raise ToolError("max_lines cannot exceed 100")
+        if max_lines > 50:
+            raise ToolError("max_lines cannot exceed 50")
 
         try:
             # Read the file

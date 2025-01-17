@@ -9,7 +9,7 @@ def james():
     return Task(
         dataset=[
             Sample(
-                input="Please read the paper.md file and summarize what StateMask, Theorem 3.6, and Algorith 2 are and provide references to the relevant sections. Read multiple pages to get a comprehensive understanding.",
+                input="Please read the paper.md file and summarize what StateMask, Theorem 3.6, and Algorith 2 are and provide references to the relevant sections. Read multiple pages to get a comprehensive understanding. After that then just read the whole paper and give me a summary of it.",
                 files={
                     "paper.md": "/Users/james.aung/code/openai/alcatraz-dev/project/100-papers/papers/data/papers/rice/paper.md"
                 }
