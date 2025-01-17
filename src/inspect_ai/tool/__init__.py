@@ -17,6 +17,7 @@ from ._tool_with import tool_with
 from ._tools._execute import bash, python
 from ._tools._web_browser import web_browser
 from ._tools._web_search import web_search
+from ._tools._file_reader import read_file_chunk, search_file
 
 __all__ = [
     "bash",
@@ -42,8 +43,9 @@ __all__ = [
     "ToolInfo",
     "ToolParam",
     "ToolParams",
+    "read_file_chunk",
+    "search_file",
 ]
-
 _UTIL_MODULE_VERSION = "0.3.19"
 _REMOVED_IN = "0.4"
 
@@ -81,3 +83,4 @@ relocated_module_attribute(
     "0.3.19",
     _REMOVED_IN,
 )
+

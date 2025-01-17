@@ -57,3 +57,59 @@ def read_file_chunk():
     return execute
 
 
+@tool
+def search_file():
+    async def execute(file: str, query: str, context_lines: int = 2) -> str:
+        """Search for a keyword or phrase in a file and return matching lines with context.
+
+        Args:
+            file (str): Path to the file to search
+            query (str): Text to search for (case-insensitive)
+            context_lines (int): Number of lines of context to show before and after each match (default: 2)
+
+        Returns:
+            str: Matching lines with their line numbers and context
+
+        Raises:
+            ToolError: If the file cannot be read or if invalid parameters are provided
+        """
+        if context_lines < 0:
+            raise ToolError("context_lines must be >= 0")
+
+        try:
+            # Read the file
+            content = await sandbox().read_file(file)
+            
+            # Split into lines
+            lines = content.splitlines()
+            
+            # Find matches (case-insensitive)
+            matches = []
+            query = query.lower()
+            
+            for i, line in enumerate(lines):
+                if query in line.lower():
+                    # Calculate context range
+                    start = max(0, i - context_lines)
+                    end = min(len(lines), i + context_lines + 1)
+                    
+                    # Get context lines
+                    context = []
+                    for j in range(start, end):
+                        prefix = ">>> " if j == i else "    "  # Highlight matching line
+                        context.append(f"{prefix}{j+1}: {lines[j]}")
+                    
+                    matches.append("\n".join(context))
+            
+            if not matches:
+                return f"No matches found for '{query}' in {file}"
+            
+            summary = f"Found {len(matches)} matches for '{query}' in {file}:\n\n"
+            return summary + "\n\n".join(matches)
+
+        except FileNotFoundError:
+            raise ToolError(f"File '{file}' not found")
+        except Exception as e:
+            raise ToolError(f"Error searching file: {str(e)}")
+
+    return execute 
