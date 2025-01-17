@@ -59,22 +59,28 @@ def read_file_chunk():
 
 @tool
 def search_file():
-    async def execute(file: str, query: str, context_lines: int = 2) -> str:
+    async def execute(file: str, query: str, context_lines: int = 2, max_matches: int = 5, page: int = 1) -> str:
         """Search for a keyword or phrase in a file and return matching lines with context.
 
         Args:
             file (str): Path to the file to search
             query (str): Text to search for (case-insensitive)
             context_lines (int): Number of lines of context to show before and after each match (default: 2)
+            max_matches (int): Maximum number of matches to return per page (default: 5)
+            page (int): Which page of results to return (1-indexed, default: 1)
 
         Returns:
-            str: Matching lines with their line numbers and context
+            str: Matching lines with their line numbers and context, paginated
 
         Raises:
             ToolError: If the file cannot be read or if invalid parameters are provided
         """
         if context_lines < 0:
             raise ToolError("context_lines must be >= 0")
+        if max_matches < 1:
+            raise ToolError("max_matches must be >= 1")
+        if page < 1:
+            raise ToolError("page must be >= 1")
 
         try:
             # Read the file
@@ -83,8 +89,8 @@ def search_file():
             # Split into lines
             lines = content.splitlines()
             
-            # Find matches (case-insensitive)
-            matches = []
+            # Find all matches (case-insensitive)
+            all_matches = []
             query = query.lower()
             
             for i, line in enumerate(lines):
@@ -99,13 +105,37 @@ def search_file():
                         prefix = ">>> " if j == i else "    "  # Highlight matching line
                         context.append(f"{prefix}{j+1}: {lines[j]}")
                     
-                    matches.append("\n".join(context))
+                    all_matches.append("\n".join(context))
             
-            if not matches:
+            if not all_matches:
                 return f"No matches found for '{query}' in {file}"
             
-            summary = f"Found {len(matches)} matches for '{query}' in {file}:\n\n"
-            return summary + "\n\n".join(matches)
+            # Calculate pagination
+            total_matches = len(all_matches)
+            total_pages = (total_matches + max_matches - 1) // max_matches
+            
+            if page > total_pages:
+                return f"Invalid page number. There are only {total_pages} pages of results."
+            
+            start_idx = (page - 1) * max_matches
+            end_idx = min(start_idx + max_matches, total_matches)
+            
+            # Get matches for this page
+            matches = all_matches[start_idx:end_idx]
+            
+            # Build summary with pagination info
+            summary = [
+                f"Found {total_matches} matches for '{query}' in {file}",
+                f"Showing matches {start_idx + 1}-{end_idx} (Page {page} of {total_pages})",
+                ""  # Empty line for spacing
+            ]
+            
+            # Add match index to each result
+            numbered_matches = []
+            for i, match in enumerate(matches, start=start_idx + 1):
+                numbered_matches.append(f"[Match {i} of {total_matches}]\n{match}")
+            
+            return "\n\n".join(summary + numbered_matches)
 
         except FileNotFoundError:
             raise ToolError(f"File '{file}' not found")
